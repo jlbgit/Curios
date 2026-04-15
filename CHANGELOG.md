@@ -2,6 +2,7 @@
 
 ## 0.1.0 — 2026-04-15
 
+- **Repository hygiene:** `TODO.md` was removed from the entire git history and is now listed in `.gitignore` so it stays local-only. Anyone who already cloned the repo must reset to the rewritten remote (for example `git fetch origin` then `git reset --hard origin/<branch>`) or re-clone.
 - **Import/export:** `curios-maintain export` writes a `.tar.gz` of raw transcript `.jsonl` files plus `manifest.json` (optional `--project` filter). `curios-maintain import` unpacks into `~/.cursor/projects/curios-import-<encoded>/agent-transcripts/` and runs the indexer; supports `--project`, `--dry-run`, and `--force`. Replaced the previous JSON dump of ChromaDB chunks.
 - **Project naming:** `extract_project_name` decodes `curios-import-*` directory slugs (base64url) so reindex resolves imported transcripts to the correct logical project.
 - **Indexer:** `run_index` / `_index_file` accept optional `project_override`; `curios-index --file` accepts `--project-name` to force metadata when the path does not encode the project.
