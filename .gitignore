@@ -13,6 +13,9 @@ build/
 # Install script backups
 *.bak
 
+# Local planning (not versioned)
+TODO.md
+
 # Editor / OS
 .DS_Store
 .idea/
