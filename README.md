@@ -24,7 +24,7 @@ uv tool install ~/Applications/Curios
 |---|---|
 | `curios-server` | MCP server (started by Cursor) |
 | `curios-index` | Transcript indexer + session hook |
-| `curios-maintain` | Maintenance CLI (status, stats, reindex, prune, export) |
+| `curios-maintain` | Maintenance CLI (status, stats, verify, reindex, prune, export) |
 
 For development, use an editable install so code changes take effect immediately:
 
@@ -274,8 +274,8 @@ curios-index --force                  # Ignore sentinels, re-index everything
 ## Maintenance CLI
 
 ```bash
-curios-maintain status                                    # Summary
-curios-maintain stats                                     # Topic/novelty/depth breakdown
+curios-maintain status                                    # Machine-parseable key=value summary
+curios-maintain stats                                     # Full human-readable report (see below)
 curios-maintain verify                                    # Metadata + orphaned sources + permissions
 curios-maintain reindex [--project NAME]                  # Wipe DB and rebuild (requires "yes")
 curios-maintain prune --shallow                           # Delete shallow chunks
@@ -283,6 +283,22 @@ curios-maintain prune --stale                             # Delete orphaned chun
 curios-maintain prune --project X --before YYYY-MM-DD     # Delete old chunks for a project
 curios-maintain export --format json --output backup.json # Export all chunks
 ```
+
+### `status` output
+
+A compact human-readable health check — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `stats` for the full breakdown.
+
+### `stats` output
+
+A formatted report with sections:
+
+- **Overview** — DB size, text size (MB + estimated tokens at ~4 chars/token), last index date, chunk/conversation/project counts
+- **Depth** — `standard` vs `shallow` chunks with percentage and ASCII bar
+- **Novelty** — `novel` vs `incremental` chunks with percentage and ASCII bar
+- **Topics** — all topics ranked by frequency with percentage and ASCII bar (note: chunks can carry multiple topics, so counts may sum above total chunks)
+- **Projects** — table with chunks, conversation count, shallow%, novel%, and text size per project
+- **Shallow conversations** — lists conversations with fewer than `SHALLOW_THRESHOLD` (2) user exchanges, up to 20 entries, with a `prune --shallow` reminder
+- **Fully incremental conversations** — lists conversations where every chunk is `novelty=incremental` (content fully subsumed by earlier indexed material)
 
 ## Security
 
