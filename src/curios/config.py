@@ -15,18 +15,58 @@ COLLECTION_NAME = "curios"
 SENTINEL_COLLECTION_NAME = "curios_sentinels"
 
 SCHEMA_VERSION = 3
-CHUNK_SIZE = 800
-MIN_CHUNK_SIZE = 30
-MAX_CHUNK_CHARS = 10_000
-SHALLOW_THRESHOLD = 2
-NOVELTY_THRESHOLD = 0.92
-TOPIC_MIN_HITS_DEFAULT = 4
 
+# ── Chunking ────────────────────────────────────────────────
+# Controls how conversation exchanges are split into embeddable chunks.
+# Smaller CHUNK_SIZE → more chunks, finer retrieval but more DB overhead.
+# Larger CHUNK_SIZE → fewer chunks, coarser retrieval granularity.
+CHUNK_SIZE = 800
+MIN_CHUNK_SIZE = 30  # chunks below this char count are discarded
+MAX_CHUNK_CHARS = 10_000  # hard cap on any single chunk
+
+# ── Depth classification ────────────────────────────────────
+# Conversations with fewer user messages than this are marked "shallow".
+# Shallow conversations are excluded by default from search and recap.
+SHALLOW_THRESHOLD = 2
+
+# ── Novelty detection ───────────────────────────────────────
+# During indexing, each chunk is compared against existing chunks in the
+# same project. If cosine similarity exceeds NOVELTY_THRESHOLD, the chunk
+# is labelled "incremental" (semantically redundant). Otherwise "novel".
+# Higher threshold → stricter dedup → fewer incremental chunks.
+NOVELTY_THRESHOLD = 0.92
+# How many nearest neighbors to check when evaluating novelty.
+NOVELTY_N_RESULTS = 8
+
+# ── Topic scoring ───────────────────────────────────────────
+# Each chunk's user+assistant text is scanned for keyword hits.
+# User text hits are multiplied by USER_WEIGHT (higher → user phrasing
+# matters more than assistant boilerplate for topic assignment).
+USER_WEIGHT = 2
+# Minimum total weighted hits required to assign a topic to a chunk.
+# Topics with many keywords (architecture: 17, decisions: 20) naturally
+# accumulate more hits, so a higher default avoids over-tagging.
+TOPIC_MIN_HITS_DEFAULT = 4
+# Per-topic overrides for high-signal topics with fewer keywords.
 TOPIC_MIN_HITS: dict[str, int] = {
     "preferences": 2,
     "open_issues": 2,
     "ideas": 2,
 }
+
+# ── Search ranking ──────────────────────────────────────────
+# Distance multiplier applied to "incremental" chunks during search.
+# Values > 1.0 push redundant content lower in results.
+INCREMENTAL_PENALTY = 1.15
+# Distance multiplier for decision-tagged chunks when the query itself
+# contains decision-related keywords. Values < 1.0 boost them higher.
+DECISION_BOOST = 0.82
+# Over-fetch multiplier: raw results fetched = n_results * this factor.
+# Higher → better reranking quality but slower queries.
+SEARCH_OVERFETCH_FACTOR = 8
+# Max characters returned per result in search and recap responses.
+SEARCH_MAX_TEXT = 8_000
+RECAP_PREVIEW_MAX = 600
 
 HOME = Path.home()
 

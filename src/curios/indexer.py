@@ -25,6 +25,7 @@ from curios.config import (
     LOCK_PATH,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
+    NOVELTY_N_RESULTS,
     NOVELTY_THRESHOLD,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
@@ -34,6 +35,7 @@ from curios.config import (
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
     TRANSCRIPTS_BASE,
+    USER_WEIGHT,
     conversation_id_from_path,
     extract_project_name,
     redact_secrets,
@@ -164,9 +166,6 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
     return exchanges, user_messages
 
 
-USER_WEIGHT = 2
-
-
 def _keyword_hits(text: str, keywords: tuple[str, ...]) -> int:
     lower = text.lower()
     return sum(1 for k in keywords if k in lower)
@@ -252,7 +251,7 @@ def _novelty_label(
     try:
         res = coll.query(
             query_texts=[chunk_text],
-            n_results=8,
+            n_results=NOVELTY_N_RESULTS,
             where={"project": {"$eq": project}},
             include=["distances", "metadatas"],
         )
