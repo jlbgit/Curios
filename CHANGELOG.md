@@ -2,15 +2,19 @@
 
 ## 0.2.0 — 2026-04-15
 
-- **Packaging:** bumped `project.version` and `curios.__version__` to `0.2.0`.
-- **Release:** annotated git tags `0.1.0` (`f6752ed`) and `0.2.0` (`af6e718`).
-
-## 0.1.0 — 2026-04-15
-
-- **Repository hygiene:** `TODO.md` was removed from the entire git history and is now listed in `.gitignore` so it stays local-only. Anyone who already cloned the repo must reset to the rewritten remote (for example `git fetch origin` then `git reset --hard origin/<branch>`) or re-clone.
 - **Import/export:** `curios-maintain export` writes a `.tar.gz` of raw transcript `.jsonl` files plus `manifest.json` (optional `--project` filter). `curios-maintain import` unpacks into `~/.cursor/projects/curios-import-<encoded>/agent-transcripts/` and runs the indexer; supports `--project`, `--dry-run`, and `--force`. Replaced the previous JSON dump of ChromaDB chunks.
 - **Project naming:** `extract_project_name` decodes `curios-import-*` directory slugs (base64url) so reindex resolves imported transcripts to the correct logical project.
 - **Indexer:** `run_index` / `_index_file` accept optional `project_override`; `curios-index --file` accepts `--project-name` to force metadata when the path does not encode the project.
+- **Stats & status:** major overhaul of `curios-maintain stats` and `curios-maintain status` — richer output with percentage breakdowns, per-project and global counts, shallow/neglected/irrelevant entry detail.
+- **Configuration:** tuning parameters (novelty thresholds, topic-scoring weights, top-N retrieval) extracted from `indexer.py` and `server.py` into `config.py` as named constants.
+- **Keywords:** Spanish keyword set added to `config.py` for multi-language indexing support.
+- **Logging:** structured logging added to `indexer.py` and `maintain.py`; session hook now records indexing status.
+- **MCP fix:** corrected `Run MCP` permissions declaration in `cursor/curios.mdc`.
+- **Dev tooling:** `eval` dependency group added to `pyproject.toml` (`deepeval`, `anthropic`) for the evaluation harness.
+- **Repository hygiene:** `TODO.md` removed from entire git history and added to `.gitignore`.
+
+## 0.1.0 — 2026-04-15
+
 - Restructured as a proper Python package installable via `uv tool install`.
 - Source code moved to `~/Applications/Curios/src/curios/` (git-tracked).
 - Runtime data moved to `~/.local/share/curios/` (ChromaDB, preferences, schema state).
@@ -26,4 +30,4 @@
 - Initial implementation at `~/.cursor-memory/` with vendored dependencies.
 - MCP server with 5 tools: `curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`.
 - Indexer with session hook, novelty detection, topic scoring (v3 schema with role-weighted keywords).
-- Maintenance CLI: status, stats, verify, reindex, prune, export (raw transcripts), import.
+- Maintenance CLI: status, stats, verify, reindex, prune, export.
