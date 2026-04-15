@@ -46,7 +46,7 @@ def _iter_all_metadatas(coll):
 
 def cmd_status() -> int:
     if not CHROMADB_PATH.is_dir():
-        print("chromadb directory missing")
+        print("chromadb directory missing", file=sys.stderr)
         return 1
     coll = _get_coll(COLLECTION_NAME)
     total = coll.count()
@@ -130,7 +130,7 @@ def cmd_stats() -> int:
 def cmd_verify() -> int:
     issues = 0
     if not CHROMADB_PATH.is_dir():
-        print("missing chromadb path")
+        print("missing chromadb path", file=sys.stderr)
         return 1
     mode = CHROMADB_PATH.stat().st_mode
     if mode & 0o077:
@@ -261,7 +261,7 @@ def cmd_export(path: Path, fmt: str) -> int:
     if fmt == "json":
         path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     else:
-        print("unsupported format", fmt)
+        print("unsupported format", fmt, file=sys.stderr)
         return 1
     print("wrote", path, "records", len(rows))
     return 0
@@ -305,11 +305,11 @@ def _cli() -> int:
             return cmd_prune_stale()
         if args.project and args.before:
             return cmd_prune_project_before(args.project, args.before)
-        print("prune: use --shallow | --stale | --project X --before YYYY-MM-DD")
+        print("prune: use --shallow | --stale | --project X --before YYYY-MM-DD", file=sys.stderr)
         return 1
     if args.cmd == "export":
         return cmd_export(args.output, args.format)
-    print("unknown command")
+    print("unknown command", file=sys.stderr)
     return 1
 
 

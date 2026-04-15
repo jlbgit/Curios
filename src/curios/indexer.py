@@ -77,8 +77,8 @@ def _ensure_schema(client: chromadb.PersistentClient) -> None:
         for name in (COLLECTION_NAME, SENTINEL_COLLECTION_NAME):
             try:
                 client.delete_collection(name)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("could not delete collection %s during schema reset: %s", name, e)
         SCHEMA_STATE_PATH.write_text(
             json.dumps({"version": SCHEMA_VERSION}, indent=2),
             encoding="utf-8",
@@ -113,6 +113,8 @@ def _line_text(record: dict[str, Any]) -> str:
                 if isinstance(t, str):
                     parts.append(t)
         return "\n".join(parts).strip()
+    if content is not None:
+        log.warning("unexpected content type %s — Cursor format may have changed", type(content).__name__)
     return ""
 
 
@@ -121,6 +123,7 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
     current_user: str | None = None
     assistant_buf: list[str] = []
     user_messages = 0
+    line_count = 0
 
     def flush() -> None:
         nonlocal current_user, assistant_buf
@@ -131,17 +134,21 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
         assistant_buf = []
 
     with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+        for lineno, raw in enumerate(f, 1):
+            raw = raw.strip()
+            if not raw:
                 continue
+            line_count += 1
             try:
-                obj = json.loads(line)
+                obj = json.loads(raw)
             except json.JSONDecodeError:
+                log.debug("invalid JSON at %s line %d, skipping", path.name, lineno)
                 continue
             role = obj.get("role")
             text = _line_text(obj)
             if not text:
+                if role in ("user", "assistant"):
+                    log.debug("role=%s record with no extractable text at %s line %d", role, path.name, lineno)
                 continue
             if role == "user":
                 flush()
@@ -150,6 +157,10 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
             elif role == "assistant" and current_user is not None:
                 assistant_buf.append(text)
     flush()
+
+    if line_count > 0 and not exchanges:
+        log.warning("no exchanges parsed from %s (%d lines) — Cursor format may have changed", path.name, line_count)
+
     return exchanges, user_messages
 
 
@@ -223,7 +234,8 @@ def _already_indexed(sent_coll, abs_path: str) -> bool:
     sid = _sentinel_id(abs_path)
     try:
         got = sent_coll.get(ids=[sid], include=["metadatas"])
-    except Exception:
+    except Exception as e:
+        log.debug("sentinel lookup failed for %s: %s", abs_path, e)
         return False
     if not got["ids"]:
         return False
@@ -244,7 +256,8 @@ def _novelty_label(
             where={"project": {"$eq": project}},
             include=["distances", "metadatas"],
         )
-    except Exception:
+    except Exception as e:
+        log.debug("novelty query failed for conversation %s: %s", conversation_id, e)
         return "novel"
     dists = (res.get("distances") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
@@ -271,6 +284,7 @@ def _index_file(
 ) -> int:
     abs_path = str(path.resolve())
     if not force and _already_indexed(sent_coll, abs_path):
+        log.debug("already indexed, skipping %s", path.name)
         return 0
 
     exchanges, user_count = _parse_transcript(path)
