@@ -6,7 +6,8 @@ import os
 import shutil
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,15 @@ from curios.config import (
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
     SENTINEL_COLLECTION_NAME,
+    SHALLOW_THRESHOLD,
     TRANSCRIPTS_BASE,
 )
+
+_W = 62
+_MAX_LIST = 20
+
+
+# ── DB helpers ─────────────────────────────────────────────
 
 
 def _client() -> chromadb.PersistentClient:
@@ -44,86 +52,327 @@ def _iter_all_metadatas(coll):
         offset += len(ids)
 
 
+def _db_size_bytes() -> int:
+    size = 0
+    for root, _, files in os.walk(CHROMADB_PATH):
+        for fn in files:
+            try:
+                size += os.path.getsize(os.path.join(root, fn))
+            except OSError:
+                pass
+    return size
+
+
+# ── stats data model ───────────────────────────────────────
+
+
+@dataclass
+class ConvRecord:
+    project: str
+    rel_path: str
+    exchange_count: int
+    depth: str
+    chunks: int = 0
+    novel_chunks: int = 0
+    incremental_chunks: int = 0
+
+
+@dataclass
+class ProjectStats:
+    chunks: int = 0
+    chars: int = 0
+    conversations: set = field(default_factory=set)
+    topics: Counter = field(default_factory=Counter)
+    novelty: Counter = field(default_factory=Counter)
+    depth: Counter = field(default_factory=Counter)
+
+
+@dataclass
+class StatsResult:
+    total_chunks: int
+    db_size_bytes: int
+    last_mtime: int
+    total_chars: int
+    topics: Counter
+    novelty: Counter
+    depth: Counter
+    by_project: dict[str, ProjectStats]
+    conversations: dict[tuple[str, str], ConvRecord]
+
+
+def _collect_stats() -> StatsResult:
+    coll = _get_coll(COLLECTION_NAME)
+    total_chunks = 0
+    total_chars = 0
+    last_mtime = 0
+    topics: Counter[str] = Counter()
+    novelty: Counter[str] = Counter()
+    depth: Counter[str] = Counter()
+    by_project: dict[str, ProjectStats] = defaultdict(ProjectStats)
+    conversations: dict[tuple[str, str], ConvRecord] = {}
+
+    for _, meta, doc in _iter_all_metadatas(coll):
+        if not meta:
+            continue
+        proj = str(meta.get("project") or "?")
+        conv_id = str(meta.get("conversation_id") or "")
+        rel_path = str(meta.get("source_rel_path") or "")
+        exchange_count = int(meta.get("exchange_count") or 0)
+        dep = str(meta.get("depth") or "?")
+        nov = str(meta.get("novelty") or "?")
+        doc_chars = len(doc or "")
+
+        for t in str(meta.get("topics") or "general").split(","):
+            t = t.strip() or "general"
+            topics[t] += 1
+            by_project[proj].topics[t] += 1
+
+        novelty[nov] += 1
+        depth[dep] += 1
+        by_project[proj].chunks += 1
+        by_project[proj].chars += doc_chars
+        by_project[proj].conversations.add(conv_id)
+        by_project[proj].novelty[nov] += 1
+        by_project[proj].depth[dep] += 1
+        total_chunks += 1
+        total_chars += doc_chars
+
+        try:
+            last_mtime = max(last_mtime, int(meta.get("source_mtime") or 0))
+        except (TypeError, ValueError):
+            pass
+
+        key = (proj, conv_id)
+        if key not in conversations:
+            conversations[key] = ConvRecord(
+                project=proj,
+                rel_path=rel_path,
+                exchange_count=exchange_count,
+                depth=dep,
+            )
+        rec = conversations[key]
+        rec.chunks += 1
+        if nov == "novel":
+            rec.novel_chunks += 1
+        elif nov == "incremental":
+            rec.incremental_chunks += 1
+
+    return StatsResult(
+        total_chunks=total_chunks,
+        db_size_bytes=_db_size_bytes(),
+        last_mtime=last_mtime,
+        total_chars=total_chars,
+        topics=topics,
+        novelty=novelty,
+        depth=depth,
+        by_project=dict(sorted(by_project.items())),
+        conversations=conversations,
+    )
+
+
+# ── formatting helpers ─────────────────────────────────────
+
+
+def _hr(label: str = "") -> str:
+    if not label:
+        return "─" * _W
+    side = max(0, _W - len(label) - 4)
+    return f"── {label} " + "─" * side
+
+
+def _fmt_bytes(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} MB"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f} KB"
+    return f"{n} B"
+
+
+def _fmt_date(ts: int) -> str:
+    if not ts:
+        return "unknown"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _pct(n: int, total: int) -> str:
+    if total == 0:
+        return " 0.0%"
+    return f"{n / total * 100:4.1f}%"
+
+
+def _bar(n: int, total: int, width: int = 20) -> str:
+    if total == 0:
+        return "░" * width
+    filled = round(n / total * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _fmt_tokens(chars: int) -> str:
+    t = chars // 4
+    if t >= 1_000_000:
+        return f"~{t / 1_000_000:.1f}M tok"
+    if t >= 1_000:
+        return f"~{t // 1_000}K tok"
+    return f"~{t} tok"
+
+
+def _print_counter_rows(counter: Counter, total: int, bar_width: int = 20) -> None:
+    if not counter:
+        return
+    max_key_len = max(len(k) for k in counter)
+    for key, cnt in sorted(counter.items(), key=lambda x: -x[1]):
+        bar = _bar(cnt, total, bar_width)
+        print(f"  {key:<{max_key_len}}  {cnt:>6,}  {_pct(cnt, total)}  {bar}")
+
+
+# ── commands ───────────────────────────────────────────────
+
+
 def cmd_status() -> int:
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1
-    coll = _get_coll(COLLECTION_NAME)
-    total = coll.count()
-    by_project: Counter[str] = Counter()
-    by_topic: Counter[str] = Counter()
-    by_novelty: Counter[str] = Counter()
-    by_depth: Counter[str] = Counter()
-    last_mtime = 0
-    for _, meta, _ in _iter_all_metadatas(coll):
-        if not meta:
-            continue
-        by_project[str(meta.get("project") or "?")] += 1
-        for t in str(meta.get("topics") or "general").split(","):
-            by_topic[(t.strip() or "general")] += 1
-        by_novelty[str(meta.get("novelty") or "?")] += 1
-        by_depth[str(meta.get("depth") or "?")] += 1
-        try:
-            last_mtime = max(last_mtime, int(meta.get("source_mtime") or 0))
-        except (TypeError, ValueError):
-            pass
-    size_b = 0
-    for root, _, files in os.walk(CHROMADB_PATH):
-        for fn in files:
-            fp = os.path.join(root, fn)
-            try:
-                size_b += os.path.getsize(fp)
-            except OSError:
-                pass
-    print("schema_version", SCHEMA_VERSION)
-    print("total_chunks", total)
-    print("chromadb_bytes", size_b)
-    print("last_source_mtime", last_mtime)
-    print("per_project", dict(by_project))
+    try:
+        s = _collect_stats()
+    except ValueError:
+        print("collection not found — run curios-index first", file=sys.stderr)
+        return 1
+    total_convs = len(s.conversations)
+    standard_pct = _pct(s.depth.get("standard", 0), s.total_chunks)
+    shallow_pct = _pct(s.depth.get("shallow", 0), s.total_chunks)
+    novel_pct = _pct(s.novelty.get("novel", 0), s.total_chunks)
+    incremental_pct = _pct(s.novelty.get("incremental", 0), s.total_chunks)
+    print(f"Schema  : v{SCHEMA_VERSION}")
+    print(
+        f"Chunks  : {s.total_chunks:,} across {total_convs:,} conversations "
+        f"({len(s.by_project)} projects)"
+    )
+    print(
+        f"DB size : {_fmt_bytes(s.db_size_bytes)}  |  "
+        f"Text: {s.total_chars / 1_000_000:.2f} MB  ({_fmt_tokens(s.total_chars)})"
+    )
+    print(f"Depth   : {standard_pct} standard  /  {shallow_pct} shallow")
+    print(f"Novelty : {novel_pct} novel  /  {incremental_pct} incremental")
+    print(f"Updated : {_fmt_date(s.last_mtime)}")
     return 0
 
 
 def cmd_stats() -> int:
-    coll = _get_coll(COLLECTION_NAME)
-    total = coll.count()
-    conv_sizes: Counter[str] = Counter()
-    by_topic: Counter[str] = Counter()
-    by_novelty: Counter[str] = Counter()
-    by_depth: Counter[str] = Counter()
-    by_project: Counter[str] = Counter()
-    last_mtime = 0
-    for _, meta, doc in _iter_all_metadatas(coll):
-        if not meta:
-            continue
-        cid = str(meta.get("conversation_id") or "")
-        proj = str(meta.get("project") or "?")
-        conv_sizes[f"{proj}:{cid}"] += len(doc or "")
-        by_project[proj] += 1
-        for t in str(meta.get("topics") or "general").split(","):
-            by_topic[(t.strip() or "general")] += 1
-        by_novelty[str(meta.get("novelty") or "?")] += 1
-        by_depth[str(meta.get("depth") or "?")] += 1
-        try:
-            last_mtime = max(last_mtime, int(meta.get("source_mtime") or 0))
-        except (TypeError, ValueError):
-            pass
-    size_b = 0
-    for root, _, files in os.walk(CHROMADB_PATH):
-        for fn in files:
-            fp = os.path.join(root, fn)
-            try:
-                size_b += os.path.getsize(fp)
-            except OSError:
-                pass
-    print("schema_version", SCHEMA_VERSION)
-    print("total_chunks", total)
-    print("chromadb_bytes", size_b)
-    print("last_source_mtime", last_mtime)
-    print("topic_distribution", dict(by_topic))
-    print("novelty_distribution", dict(by_novelty))
-    print("depth_distribution", dict(by_depth))
-    print("chunks_per_project", dict(by_project))
-    print("top10_conversations_by_chars", conv_sizes.most_common(10))
+    if not CHROMADB_PATH.is_dir():
+        print("chromadb directory missing", file=sys.stderr)
+        return 1
+    try:
+        s = _collect_stats()
+    except ValueError:
+        print("collection not found — run curios-index first", file=sys.stderr)
+        return 1
+
+    total_convs = len(s.conversations)
+    total_topic_hits = sum(s.topics.values())
+
+    # ── header ──────────────────────────────────────────────
+    print("═" * _W)
+    title = "CURIOS INDEX STATS"
+    schema = f"schema v{SCHEMA_VERSION}"
+    gap = _W - len(title) - len(schema) - 2
+    print(f" {title}{' ' * max(gap, 1)}{schema}")
+    print("═" * _W)
+    print()
+
+    # ── overview ─────────────────────────────────────────────
+    print(f"  DB size    : {_fmt_bytes(s.db_size_bytes)}")
+    print(f"  Text size  : {s.total_chars / 1_000_000:.2f} MB  ({_fmt_tokens(s.total_chars)})")
+    print(f"  Last index : {_fmt_date(s.last_mtime)}")
+    print(
+        f"  Chunks     : {s.total_chunks:,}   "
+        f"Conversations: {total_convs:,}   "
+        f"Projects: {len(s.by_project)}"
+    )
+    print()
+
+    # ── depth ────────────────────────────────────────────────
+    print(_hr("DEPTH"))
+    _print_counter_rows(s.depth, s.total_chunks)
+    print()
+
+    # ── novelty ──────────────────────────────────────────────
+    print(_hr("NOVELTY"))
+    _print_counter_rows(s.novelty, s.total_chunks)
+    print()
+
+    # ── topics ───────────────────────────────────────────────
+    print(_hr("TOPICS"))
+    if total_topic_hits > s.total_chunks:
+        print(f"  (chunks may carry multiple topics; counts sum to {total_topic_hits:,})")
+    _print_counter_rows(s.topics, total_topic_hits)
+    print()
+
+    # ── per-project table ────────────────────────────────────
+    print(_hr("PROJECTS"))
+    if s.by_project:
+        col_w = max(max(len(p) for p in s.by_project), 7)
+        print(
+            f"  {'Project':<{col_w}}  {'Chunks':>6}  {'Convs':>5}  "
+            f"{'Shallow':>7}  {'Novel':>5}  {'Text':>8}"
+        )
+        print(
+            f"  {'─' * col_w}  {'──────'}  {'─────'}  "
+            f"{'───────'}  {'─────'}  {'────────'}"
+        )
+        for proj, ps in sorted(s.by_project.items(), key=lambda x: -x[1].chunks):
+            shallow_pct = _pct(ps.depth.get("shallow", 0), ps.chunks)
+            novel_pct = _pct(ps.novelty.get("novel", 0), ps.chunks)
+            print(
+                f"  {proj:<{col_w}}  {ps.chunks:>6,}  {len(ps.conversations):>5}  "
+                f"{shallow_pct:>7}  {novel_pct:>5}  {_fmt_bytes(ps.chars):>8}"
+            )
+    print()
+
+    # ── shallow conversations ─────────────────────────────────
+    print(_hr("SHALLOW CONVERSATIONS"))
+    shallow = sorted(
+        [r for r in s.conversations.values() if r.depth == "shallow"],
+        key=lambda r: (r.project, r.rel_path),
+    )
+    if not shallow:
+        print("  none")
+    else:
+        print(f"  {len(shallow)} conversation(s) with < {SHALLOW_THRESHOLD} exchanges")
+        print()
+        shown = shallow[:_MAX_LIST]
+        col_w = max(len(r.project) for r in shown)
+        for rec in shown:
+            ex = f"{rec.exchange_count} exchange{'s' if rec.exchange_count != 1 else ' '}"
+            name = Path(rec.rel_path).stem[:40] if rec.rel_path else "?"
+            ch = f"{rec.chunks} chunk{'s' if rec.chunks != 1 else ' '}"
+            print(f"    {rec.project:<{col_w}}  {name}  {ex}  ({ch})")
+        if len(shallow) > _MAX_LIST:
+            print(f"    ... and {len(shallow) - _MAX_LIST} more")
+        print()
+        print("    → curios-maintain prune --shallow")
+    print()
+
+    # ── fully incremental conversations ──────────────────────
+    print(_hr("FULLY INCREMENTAL CONVERSATIONS"))
+    redundant = sorted(
+        [r for r in s.conversations.values() if r.novel_chunks == 0 and r.incremental_chunks > 0],
+        key=lambda r: (-r.chunks, r.project),
+    )
+    if not redundant:
+        print("  none")
+    else:
+        print(f"  {len(redundant)} conversation(s) with no novel chunks (content fully subsumed)")
+        print()
+        shown = redundant[:_MAX_LIST]
+        col_w = max(len(r.project) for r in shown)
+        for rec in shown:
+            name = Path(rec.rel_path).stem[:40] if rec.rel_path else "?"
+            ch = f"{rec.chunks} chunk{'s' if rec.chunks != 1 else ' '}"
+            print(f"    {rec.project:<{col_w}}  {name}  ({ch})")
+        if len(redundant) > _MAX_LIST:
+            print(f"    ... and {len(redundant) - _MAX_LIST} more")
+    print()
+
     return 0
 
 
