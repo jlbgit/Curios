@@ -91,9 +91,14 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "agreed",
         "conclusion",
         "rationale",
+        # Spanish
         "decidimos",
         "vamos con",
         "la decisión",
+        "optamos por",
+        "elegimos",
+        "nos quedamos con",
+        "la opción es",
     ),
     "architecture": (
         "architecture",
@@ -113,6 +118,13 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "pipeline",
         "endpoint",
         "middleware",
+        # Spanish
+        "diseño",
+        "patrón",
+        "módulo",
+        "capa",
+        "estructura",
+        "flujo",
     ),
     "planning": (
         "plan",
@@ -130,6 +142,11 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "entregable",
         "capítulo",
         "sección",
+        # Spanish
+        "hoja de ruta",
+        "plazo",
+        "alcance",
+        "objetivo",
     ),
     "problems": (
         "bug",
@@ -148,6 +165,13 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "too complex",
         "too complicated",
         "too heavy",
+        # Spanish
+        "no funciona",
+        "falla",
+        "fallo",
+        "causa raíz",
+        "solución alternativa",
+        "demasiado complejo",
     ),
     "preferences": (
         "i prefer",
@@ -167,9 +191,15 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "my style",
         "my rule",
         "our team uses",
+        # Spanish
         "prefiero",
         "por favor no",
         "me gusta",
+        "siempre uso",
+        "nunca uses",
+        "quiero que",
+        "mi convención",
+        "nuestro equipo",
     ),
     "ideas": (
         "what if",
@@ -186,6 +216,12 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "spike",
         "explore",
         "might be worth",
+        # Spanish
+        "qué tal si",
+        "podríamos",
+        "estaría bien",
+        "a futuro",
+        "y si",
     ),
     "open_issues": (
         "todo",
@@ -197,6 +233,14 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "follow-up",
         "open question",
         "blocked",
+        # Spanish
+        "falta",
+        "hace falta",
+        "por hacer",
+        "aún no",
+        "pregunta abierta",
+        "bloqueado",
+        "sin implementar",
     ),
     "general": (),
 }
