@@ -6,9 +6,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
+from io import BytesIO
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +24,162 @@ from curios.config import (
     SENTINEL_COLLECTION_NAME,
     SHALLOW_THRESHOLD,
     TRANSCRIPTS_BASE,
+    conversation_id_from_path,
+    extract_project_name,
+    import_slug_for_project,
 )
+from curios.indexer import discover_transcripts, run_index
 
 _W = 62
 _MAX_LIST = 20
+
+EXPORT_MANIFEST_VERSION = 1
+EXPORT_TRANSCRIPTS_DIR = "transcripts"
+
+
+def _export_arc_path(conversation_id: str) -> str:
+    return f"{EXPORT_TRANSCRIPTS_DIR}/{conversation_id}.jsonl"
+
+
+def _manifest_path_safe(arc_path: str) -> bool:
+    if ".." in arc_path or arc_path.startswith("/"):
+        return False
+    prefix = f"{EXPORT_TRANSCRIPTS_DIR}/"
+    if not arc_path.startswith(prefix):
+        return False
+    rest = arc_path[len(prefix) :]
+    return bool(rest) and "/" not in rest and not rest.startswith(".")
+
+
+def _tar_member_names_safe(tf: tarfile.TarFile) -> set[str]:
+    out: set[str] = set()
+    for m in tf.getmembers():
+        if not m.isfile():
+            continue
+        name = m.name.replace("\\", "/").lstrip("./")
+        if name == "manifest.json" or _manifest_path_safe(name):
+            out.add(name)
+    return out
+
+
+def cmd_export_transcripts(output: Path, project_filter: str | None) -> int:
+    paths = discover_transcripts(project_filter)
+    if not paths:
+        print("no transcripts found", file=sys.stderr)
+        return 1
+    output.parent.mkdir(parents=True, exist_ok=True)
+    files: list[dict[str, Any]] = []
+    sorted_paths = sorted(paths, key=lambda x: str(x))
+    for p in sorted_paths:
+        cid = conversation_id_from_path(p)
+        arc = _export_arc_path(cid)
+        files.append(
+            {
+                "path": arc,
+                "project": extract_project_name(p),
+                "conversation_id": cid,
+                "mtime": int(p.stat().st_mtime),
+            }
+        )
+    manifest = {
+        "version": EXPORT_MANIFEST_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "files": files,
+    }
+    manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
+    with tarfile.open(output, "w:gz") as tf:
+        info = tarfile.TarInfo(name="manifest.json")
+        info.size = len(manifest_bytes)
+        tf.addfile(info, fileobj=BytesIO(manifest_bytes))
+        for p in sorted_paths:
+            cid = conversation_id_from_path(p)
+            arc = _export_arc_path(cid)
+            tf.add(str(p.resolve()), arcname=arc, recursive=False)
+    print("wrote", output, "transcripts", len(files))
+    return 0
+
+
+def cmd_import_transcripts(
+    input_path: Path,
+    project: str | None,
+    dry_run: bool,
+    force: bool,
+) -> int:
+    if not input_path.is_file():
+        print("missing archive", input_path, file=sys.stderr)
+        return 1
+    with tarfile.open(input_path, "r:gz") as tf:
+        allowed = _tar_member_names_safe(tf)
+        if "manifest.json" not in allowed:
+            print("archive missing manifest.json", file=sys.stderr)
+            return 1
+        mf = tf.extractfile("manifest.json")
+        if mf is None:
+            print("could not read manifest.json", file=sys.stderr)
+            return 1
+        try:
+            manifest = json.loads(mf.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print("invalid manifest.json:", e, file=sys.stderr)
+            return 1
+        ver = manifest.get("version")
+        if ver != EXPORT_MANIFEST_VERSION:
+            print("unsupported manifest version", ver, "expected", EXPORT_MANIFEST_VERSION, file=sys.stderr)
+            return 1
+        entries = manifest.get("files")
+        if not isinstance(entries, list) or not entries:
+            print("manifest has no files", file=sys.stderr)
+            return 1
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                print("manifest files[", i, "] is not an object", file=sys.stderr)
+                return 1
+            arc_path = entry.get("path")
+            if not isinstance(arc_path, str) or not _manifest_path_safe(arc_path):
+                print("invalid or unsafe path in manifest:", arc_path, file=sys.stderr)
+                return 1
+            if arc_path not in allowed:
+                print("manifest references missing or unsafe member:", arc_path, file=sys.stderr)
+                return 1
+            cid = entry.get("conversation_id")
+            if not isinstance(cid, str) or not cid:
+                print("missing conversation_id for", arc_path, file=sys.stderr)
+                return 1
+            src_proj = entry.get("project")
+            if project:
+                dest_project = project
+            elif isinstance(src_proj, str) and src_proj:
+                dest_project = src_proj
+            else:
+                print("missing project for", arc_path, file=sys.stderr)
+                return 1
+            entry["_dest_project"] = dest_project
+
+        if dry_run:
+            print("dry-run: would import", len(entries), "transcript(s)")
+            for entry in entries:
+                dp = entry["_dest_project"]
+                slug = import_slug_for_project(dp)
+                print(" ", entry["path"], "->", TRANSCRIPTS_BASE / slug / "agent-transcripts" / f"{entry['conversation_id']}.jsonl")
+            return 0
+
+        placed: list[Path] = []
+        for entry in entries:
+            dest_project = str(entry["_dest_project"])
+            dest_dir = TRANSCRIPTS_BASE / import_slug_for_project(dest_project) / "agent-transcripts"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{entry['conversation_id']}.jsonl"
+            arc_path = str(entry["path"])
+            src = tf.extractfile(arc_path)
+            if src is None:
+                print("missing member", arc_path, file=sys.stderr)
+                return 1
+            dest.write_bytes(src.read())
+            placed.append(dest)
+
+    fd, total = run_index(placed, force, False, None)
+    print("imported", len(placed), "file(s); indexed", fd, "file(s),", total, "chunk(s)")
+    return 0
 
 
 # ── DB helpers ─────────────────────────────────────────────
@@ -501,21 +655,6 @@ def cmd_prune_stale() -> int:
     return 0
 
 
-def cmd_export(path: Path, fmt: str) -> int:
-    coll = _get_coll(COLLECTION_NAME)
-    rows: list[dict[str, Any]] = []
-    for mid, meta, doc in _iter_all_metadatas(coll):
-        rows.append({"id": mid, "metadata": meta, "document": doc})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "json":
-        path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    else:
-        print("unsupported format", fmt, file=sys.stderr)
-        return 1
-    print("wrote", path, "records", len(rows))
-    return 0
-
-
 def _cli() -> int:
     ap = argparse.ArgumentParser(description="Curios maintenance CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -534,9 +673,15 @@ def _cli() -> int:
     p_pr.add_argument("--project", type=str, default=None)
     p_pr.add_argument("--before", type=str, default=None)
 
-    p_ex = sub.add_parser("export")
-    p_ex.add_argument("--format", choices=["json"], default="json")
-    p_ex.add_argument("--output", type=Path, required=True)
+    p_ex = sub.add_parser("export", help="Pack raw .jsonl transcripts into a .tar.gz with manifest.json")
+    p_ex.add_argument("--output", type=Path, required=True, help="Destination path (e.g. curios-export.tar.gz)")
+    p_ex.add_argument("--project", type=str, default=None, help="Only transcripts for this project (name or slug)")
+
+    p_im = sub.add_parser("import", help="Unpack a Curios transcript archive and index into ChromaDB")
+    p_im.add_argument("--input", type=Path, required=True, help="Archive from curios-maintain export")
+    p_im.add_argument("--project", type=str, default=None, help="Put all transcripts under this logical project")
+    p_im.add_argument("--dry-run", action="store_true", help="Validate manifest and print destinations only")
+    p_im.add_argument("--force", action="store_true", help="Ignore sentinels when indexing")
 
     args = ap.parse_args()
     if args.cmd == "status":
@@ -557,7 +702,9 @@ def _cli() -> int:
         print("prune: use --shallow | --stale | --project X --before YYYY-MM-DD", file=sys.stderr)
         return 1
     if args.cmd == "export":
-        return cmd_export(args.output, args.format)
+        return cmd_export_transcripts(args.output, args.project)
+    if args.cmd == "import":
+        return cmd_import_transcripts(args.input, args.project, args.dry_run, args.force)
     print("unknown command", file=sys.stderr)
     return 1
 

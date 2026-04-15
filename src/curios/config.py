@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 import re
 from pathlib import Path
@@ -201,6 +203,32 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 PROJECT_NAME_OVERRIDES: dict[str, str] = {}
 
+CURIOS_IMPORT_SLUG_PREFIX = "curios-import-"
+
+
+def import_slug_for_project(project: str) -> str:
+    raw = project.encode("utf-8")
+    b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"{CURIOS_IMPORT_SLUG_PREFIX}{b64}"
+
+
+_B64URL_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def project_name_from_import_slug(slug: str) -> str | None:
+    if not slug.startswith(CURIOS_IMPORT_SLUG_PREFIX):
+        return None
+    suffix = slug[len(CURIOS_IMPORT_SLUG_PREFIX) :]
+    if not suffix or not all(c in _B64URL_CHARS for c in suffix):
+        return None
+    try:
+        pad = "=" * (-len(suffix) % 4)
+        decoded = base64.urlsafe_b64decode(suffix + pad)
+        name = decoded.decode("utf-8")
+        return name if name else None
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+
 REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "[REDACTED]"),
     (re.compile(r"AKIA[A-Z0-9]{16}"), "[REDACTED]"),
@@ -234,6 +262,10 @@ def extract_project_name(transcript_path: Path) -> str:
 
     if slug in PROJECT_NAME_OVERRIDES:
         return PROJECT_NAME_OVERRIDES[slug]
+
+    imported = project_name_from_import_slug(slug)
+    if imported is not None:
+        return imported
 
     segments = _slug_segments(slug)
     if not segments:

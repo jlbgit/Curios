@@ -280,6 +280,7 @@ def _index_file(
     sent_coll,
     force: bool,
     dry_run: bool,
+    project_override: str | None = None,
 ) -> int:
     abs_path = str(path.resolve())
     if not force and _already_indexed(sent_coll, abs_path):
@@ -290,7 +291,7 @@ def _index_file(
     if not exchanges:
         return 0
 
-    project = extract_project_name(path)
+    project = project_override if project_override is not None else extract_project_name(path)
     conversation_id = conversation_id_from_path(path)
     rel = transcript_relative_path(path)
     mtime = int(path.stat().st_mtime)
@@ -375,6 +376,7 @@ def run_index(
     paths: list[Path],
     force: bool,
     dry_run: bool,
+    project_override: str | None = None,
 ) -> tuple[int, int]:
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
     os.chmod(CURIOS_DATA, 0o700)
@@ -391,7 +393,7 @@ def run_index(
         n = 0
         with index_lock():
             try:
-                n = _index_file(path, coll, sent_coll, force, dry_run)
+                n = _index_file(path, coll, sent_coll, force, dry_run, project_override)
             except OSError as e:
                 log.warning("skip %s: %s", path, e)
                 n = 0
@@ -448,6 +450,12 @@ def _cli() -> int:
     ap = argparse.ArgumentParser(description="Curios transcript indexer")
     ap.add_argument("--file", type=Path, help="Index a single transcript")
     ap.add_argument("--project", type=str, default=None, help="Limit to one logical project name")
+    ap.add_argument(
+        "--project-name",
+        type=str,
+        default=None,
+        help="Force metadata project name (use with --file when path does not encode project)",
+    )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="Ignore sentinels")
     ap.add_argument("--session-hook", action="store_true", help="Read hook JSON from stdin and spawn indexer")
@@ -466,7 +474,8 @@ def _cli() -> int:
         log.info("no transcripts found")
         return 0
 
-    fd, total = run_index(paths, args.force, args.dry_run)
+    override = args.project_name if args.file else None
+    fd, total = run_index(paths, args.force, args.dry_run, override)
     log.info("done files=%s chunks=%s", fd, total)
     return 0
 

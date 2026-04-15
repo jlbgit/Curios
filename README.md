@@ -269,6 +269,7 @@ curios-index --file PATH              # One file (used by sessionEnd hook)
 curios-index --project NAME           # Filter by project slug
 curios-index --dry-run                # Preview without writing
 curios-index --force                  # Ignore sentinels, re-index everything
+curios-index --file PATH --project-name MyApp   # Force logical project when path is outside ~/.cursor/projects/
 ```
 
 ## Maintenance CLI
@@ -281,7 +282,11 @@ curios-maintain reindex [--project NAME]                  # Wipe DB and rebuild 
 curios-maintain prune --shallow                           # Delete shallow chunks
 curios-maintain prune --stale                             # Delete orphaned chunks
 curios-maintain prune --project X --before YYYY-MM-DD     # Delete old chunks for a project
-curios-maintain export --format json --output backup.json # Export all chunks
+curios-maintain export --output curios-transcripts.tar.gz              # Raw .jsonl + manifest.json
+curios-maintain export --output curios-one-project.tar.gz --project X  # Filter by project
+curios-maintain import --input curios-transcripts.tar.gz               # Unpack under ~/.cursor/projects/curios-import-*/
+curios-maintain import --input archive.tar.gz --project MyApp          # Force logical project name
+curios-maintain import --input archive.tar.gz --dry-run                # Validate only
 ```
 
 ### `status` output

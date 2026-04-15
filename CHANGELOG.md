@@ -2,6 +2,9 @@
 
 ## 0.1.0 — 2026-04-15
 
+- **Import/export:** `curios-maintain export` writes a `.tar.gz` of raw transcript `.jsonl` files plus `manifest.json` (optional `--project` filter). `curios-maintain import` unpacks into `~/.cursor/projects/curios-import-<encoded>/agent-transcripts/` and runs the indexer; supports `--project`, `--dry-run`, and `--force`. Replaced the previous JSON dump of ChromaDB chunks.
+- **Project naming:** `extract_project_name` decodes `curios-import-*` directory slugs (base64url) so reindex resolves imported transcripts to the correct logical project.
+- **Indexer:** `run_index` / `_index_file` accept optional `project_override`; `curios-index --file` accepts `--project-name` to force metadata when the path does not encode the project.
 - Restructured as a proper Python package installable via `uv tool install`.
 - Source code moved to `~/Applications/Curios/src/curios/` (git-tracked).
 - Runtime data moved to `~/.local/share/curios/` (ChromaDB, preferences, schema state).
@@ -17,4 +20,4 @@
 - Initial implementation at `~/.cursor-memory/` with vendored dependencies.
 - MCP server with 5 tools: `curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`.
 - Indexer with session hook, novelty detection, topic scoring (v3 schema with role-weighted keywords).
-- Maintenance CLI: status, stats, verify, reindex, prune, export.
+- Maintenance CLI: status, stats, verify, reindex, prune, export (raw transcripts), import.
