@@ -14,7 +14,7 @@ Cross-project memory for Cursor IDE. Indexes `~/.cursor/projects/*/agent-transcr
 Clone the repository and install with `uv tool`:
 
 ```bash
-git clone <repo-url> ~/Applications/Curios
+git clone https://github.com/jlbgit/Curios ~/Applications/Curios
 uv tool install ~/Applications/Curios
 ```
 
