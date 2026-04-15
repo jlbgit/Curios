@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionEnd": [
+      {
+        "command": "/FULL/PATH/TO/.local/bin/curios-index --session-hook",
+        "timeout": 10
+      }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "curios": {
+    "command": "/FULL/PATH/TO/.local/bin/curios-server"
+  }
+}

@@ -1,0 +1,21 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# uv
+.venv/
+.uv/
+
+# Install script backups
+*.bak
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
