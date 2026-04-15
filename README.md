@@ -99,7 +99,7 @@ Replace `/FULL/PATH/TO/` with the output of `which curios-server`. If you alread
 
 Replace `/FULL/PATH/TO/` with the output of `which curios-index`. If you already have other hooks, append the curios entry to the `sessionEnd` array. See `cursor/hooks-entry.json` for the structure.
 
-The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer in the background, and returns immediately. Memory builds up passively as sessions close.
+The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`, so you can watch it in real time with `tail -f ~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written (timestamp, files indexed, chunks written). No-op runs (transcript already indexed) do not overwrite a previous record. Memory builds up passively as sessions close.
 
 **3. AI rule** — copy `cursor/curios.mdc` verbatim to `~/.cursor/rules/`:
 
@@ -132,6 +132,8 @@ Runtime data is stored in `~/.local/share/curios/` (created automatically on fir
 ├── chromadb/              # Vector database
 ├── preferences.md         # User preferences (optional, hand-edited)
 ├── schema_version.json    # Schema version tracking
+├── index.log              # Appended log from session-hook indexer runs
+├── last_indexed.json      # Completion record from the last run that indexed ≥1 file
 └── .index.lock            # Advisory lock for concurrent indexing
 ```
 
@@ -218,7 +220,7 @@ Optionally remove the source repository (`~/Applications/Curios`) and, if no lon
 | `curios_search` | Semantic search across transcripts (cross-project) |
 | `curios_recap` | Session recap: most recent conversations for a project, time-ordered |
 | `curios_related` | Given a conversation_id, find related content in other conversations/projects |
-| `curios_status` | Chunk counts, per-project totals, topic distribution, DB size |
+| `curios_status` | Chunk counts, per-project totals, topic distribution, DB size, last indexing run (`last_indexed`) and log path (`index_log`) |
 | `curios_preferences` | Returns `preferences.md` contents |
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.

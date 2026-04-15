@@ -12,6 +12,8 @@ TRANSCRIPTS_BASE = CURSOR_HOME / "projects"
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md"
 LOCK_PATH = CURIOS_DATA / ".index.lock"
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"
+INDEX_LOG_PATH = CURIOS_DATA / "index.log"
+LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"
 
 COLLECTION_NAME = "curios"
 SENTINEL_COLLECTION_NAME = "curios_sentinels"

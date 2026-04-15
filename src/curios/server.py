@@ -12,7 +12,9 @@ from curios.config import (
     CHROMADB_PATH,
     COLLECTION_NAME,
     DECISION_BOOST,
+    INDEX_LOG_PATH,
     INCREMENTAL_PENALTY,
+    LAST_INDEXED_PATH,
     PREFERENCES_PATH,
     RECAP_PREVIEW_MAX,
     SEARCH_MAX_TEXT,
@@ -346,6 +348,13 @@ def curios_status() -> str:
                 except OSError:
                     pass
 
+    last_indexed: dict[str, Any] | None = None
+    if LAST_INDEXED_PATH.is_file():
+        try:
+            last_indexed = json.loads(LAST_INDEXED_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
     payload = {
         "total_chunks": total,
         "per_project": by_project,
@@ -353,6 +362,8 @@ def curios_status() -> str:
         "last_source_mtime": last_mtime,
         "chromadb_bytes": size_b,
         "transcripts_base": str(TRANSCRIPTS_BASE),
+        "last_indexed": last_indexed,
+        "index_log": str(INDEX_LOG_PATH),
     }
     return _wrap(json.dumps(payload, indent=2))
 

@@ -22,6 +22,8 @@ from curios.config import (
     CHUNK_SIZE,
     COLLECTION_NAME,
     CURIOS_DATA,
+    INDEX_LOG_PATH,
+    LAST_INDEXED_PATH,
     LOCK_PATH,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
@@ -436,14 +438,17 @@ def _session_hook() -> None:
     else:
         cmd = [exe, "--file", str(path.resolve())]
 
+    CURIOS_DATA.mkdir(parents=True, exist_ok=True)
+    log_file = open(INDEX_LOG_PATH, "a")
     subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
         start_new_session=True,
         env=os.environ.copy(),
     )
+    log_file.close()
 
 
 def _cli() -> int:
@@ -477,6 +482,14 @@ def _cli() -> int:
     override = args.project_name if args.file else None
     fd, total = run_index(paths, args.force, args.dry_run, override)
     log.info("done files=%s chunks=%s", fd, total)
+
+    if not args.dry_run and fd > 0:
+        LAST_INDEXED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_INDEXED_PATH.write_text(
+            json.dumps({"indexed_at": int(time.time()), "files_done": fd, "chunks_written": total}, indent=2),
+            encoding="utf-8",
+        )
+
     return 0
 
 
