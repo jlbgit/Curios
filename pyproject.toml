@@ -1,6 +1,6 @@
 [project]
 name = "curios"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cross-project transcript memory for Cursor IDE"
 requires-python = ">=3.11"
 dependencies = [

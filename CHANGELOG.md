@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 — 2026-04-15
+
+- **Packaging:** bumped `project.version` and `curios.__version__` to `0.2.0`.
+- **Release:** annotated git tags `0.1.0` (`f6752ed`) and `0.2.0` (`af6e718`).
+
 ## 0.1.0 — 2026-04-15
 
 - **Repository hygiene:** `TODO.md` was removed from the entire git history and is now listed in `.gitignore` so it stays local-only. Anyone who already cloned the repo must reset to the rewritten remote (for example `git fetch origin` then `git reset --hard origin/<branch>`) or re-clone.
