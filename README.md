@@ -4,70 +4,76 @@ Cross-project memory for Cursor IDE. Indexes `~/.cursor/projects/*/agent-transcr
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+**Requires:** Python 3.11+ and [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ### Step 1: Install the package
 
-Clone the repository and install with `uv tool`:
-
 ```bash
-git clone https://github.com/jlbgit/Curios ~/Applications/Curios
-uv tool install ~/Applications/Curios
+uv tool install git+https://github.com/jlbgit/Curios
 ```
 
-`uv tool install` creates an isolated virtual environment under `~/.local/share/uv/tools/curios/` and places three executable entry points on your PATH at `~/.local/bin/`:
+This creates an isolated virtual environment and places four entry points on your PATH at `~/.local/bin/`:
 
 | Command | Purpose |
 |---|---|
+| `curios` | Install / uninstall Cursor integration |
 | `curios-server` | MCP server (started by Cursor) |
 | `curios-index` | Transcript indexer + session hook |
 | `curios-maintain` | Maintenance CLI (status, stats, verify, reindex, prune, export) |
 
-For development, use an editable install so code changes take effect immediately:
+### Step 2: Configure Cursor
 
 ```bash
-uv tool install -e ~/Applications/Curios
+curios cursor install
+```
 
-# After changes, reinstall to update entry points
+This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs the `curios-install` skill to `~/.cursor/skills/`. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
+
+**Restart Cursor** after running this.
+
+To undo all changes: `curios cursor uninstall`.
+
+### Step 3: Initial indexing
+
+```bash
+curios-index          # first run ~25 min; subsequent runs happen automatically via session hook
+curios-maintain status
+```
+
+After this, indexing happens automatically at the end of each Cursor session via the hook.
+
+### Agent-guided install (alternative)
+
+If you prefer the agent to walk you through installation conversationally, bootstrap the skill first:
+
+```bash
+mkdir -p ~/.cursor/skills/curios-install
+curl -fsSL https://raw.githubusercontent.com/jlbgit/Curios/main/src/curios/cursor/skill.md \
+  > ~/.cursor/skills/curios-install/SKILL.md
+```
+
+Then open any Cursor project and say: *"Install Curios for me."*
+
+### Development install
+
+```bash
+git clone https://github.com/jlbgit/Curios ~/Applications/Curios
+uv tool install -e ~/Applications/Curios
+curios cursor install
+
+# After code changes, reinstall to update entry points
 uv tool install --reinstall -e ~/Applications/Curios
 ```
 
-Verify the install:
+### Manual Cursor setup
 
-```bash
-which curios-server curios-index curios-maintain
-```
-
-### Step 2: Configure Cursor
-
-Curios needs three entries in Cursor's configuration: an MCP server, a session hook, and an AI rule. These live in `~/.cursor/` and require **full absolute paths** to the binaries, because Cursor's desktop process does not inherit your shell's PATH.
-
-#### Option A: Install script (recommended)
-
-```bash
-bash cursor/install-cursor-config.sh
-```
-
-The script:
-- Resolves binary paths automatically via `command -v`
-- Merges entries non-destructively into existing `mcp.json` and `hooks.json`
-- Copies `curios.mdc` to `~/.cursor/rules/`
-- Creates `.bak` backups before modifying any file
-
-Safe to re-run after a reinstall or path change — it updates in place.
-
-#### Option B: Manual setup
-
-Find your binary paths first:
+If you need to configure Cursor by hand, Curios requires full absolute paths to its binaries because Cursor's desktop process does not inherit your shell's PATH. Find them first:
 
 ```bash
 which curios-server curios-index
 ```
 
-**1. MCP server** — add a `curios` entry to `~/.cursor/mcp.json`:
+**`~/.cursor/mcp.json`** — add a `curios` entry to `mcpServers`:
 
 ```json
 {
@@ -79,9 +85,7 @@ which curios-server curios-index
 }
 ```
 
-Replace `/FULL/PATH/TO/` with the output of `which curios-server`. If you already have other entries in `mcpServers`, add `curios` alongside them. See `cursor/mcp-entry.json` for the structure.
-
-**2. Session hook** — add a `sessionEnd` entry to `~/.cursor/hooks.json`:
+**`~/.cursor/hooks.json`** — append to the `sessionEnd` array:
 
 ```json
 {
@@ -97,31 +101,9 @@ Replace `/FULL/PATH/TO/` with the output of `which curios-server`. If you alread
 }
 ```
 
-Replace `/FULL/PATH/TO/` with the output of `which curios-index`. If you already have other hooks, append the curios entry to the `sessionEnd` array. See `cursor/hooks-entry.json` for the structure.
+The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
 
-The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`, so you can watch it in real time with `tail -f ~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written (timestamp, files indexed, chunks written). No-op runs (transcript already indexed) do not overwrite a previous record. Memory builds up passively as sessions close.
-
-**3. AI rule** — copy `cursor/curios.mdc` verbatim to `~/.cursor/rules/`:
-
-```bash
-cp cursor/curios.mdc ~/.cursor/rules/curios.mdc
-```
-
-This ships with `alwaysApply: true` so the AI uses Curios MCP tools directly instead of falling back to reading raw transcript files.
-
-Restart Cursor after making these changes.
-
-### Step 3: Initial indexing
-
-```bash
-# Bulk index all existing transcripts (first run takes ~25 min due to per-chunk novelty checks)
-curios-index
-
-# Verify
-curios-maintain status
-```
-
-After this, indexing happens automatically at the end of each Cursor session via the hook.
+**`~/.cursor/rules/curios.mdc`** — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: false` so the AI loads it on demand.
 
 ## Data directory
 
@@ -179,39 +161,13 @@ For the MCP server and session hook (which are launched by Cursor, not your shel
 
 ## Uninstallation
 
-### Step 1: Remove the package
-
 ```bash
-uv tool uninstall curios
+curios cursor uninstall    # remove MCP, hook, rule, and skill from ~/.cursor/
+uv tool uninstall curios   # remove binaries and isolated venv
+rm -rf ~/.local/share/curios  # remove ChromaDB, preferences, and indexing state
 ```
 
-This removes the entry points from `~/.local/bin/` and the isolated venv from `~/.local/share/uv/tools/curios/`.
-
-### Step 2: Remove Cursor integration
-
-Either run the steps below, or edit the files manually:
-
-```bash
-# Remove the AI rule
-rm -f ~/.cursor/rules/curios.mdc
-```
-
-Then edit these two files by hand:
-
-- **`~/.cursor/mcp.json`** — delete the `"curios": { ... }` entry from `mcpServers`
-- **`~/.cursor/hooks.json`** — delete the `curios-index` entry from the `sessionEnd` array
-
-Restart Cursor after making these changes.
-
-### Step 3: Remove data
-
-```bash
-rm -rf ~/.local/share/curios
-```
-
-This deletes the ChromaDB, preferences, and all indexing state.
-
-Optionally remove the source repository (`~/Applications/Curios`) and, if no longer needed, `uv` itself (`rm ~/.local/bin/uv ~/.local/bin/uvx`).
+Restart Cursor after the first command.
 
 ## MCP Tools
 
