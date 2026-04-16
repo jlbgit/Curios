@@ -27,7 +27,7 @@ This creates an isolated virtual environment and places four entry points on you
 curios cursor install
 ```
 
-This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs the `curios-install` skill to `~/.cursor/skills/`. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
+This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs the `curios-install` skill to `~/.cursor/skills/`. Only the `curios` entries are touched — other MCP servers, hooks, and rules are preserved. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
 
 **Restart Cursor** after running this.
 
