@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-04-16
+
+- **Install flow:** new `curios` CLI with `curios cursor install` / `curios cursor uninstall` — deploys MCP server entry, session hook, AI rule, and install skill into `~/.cursor/` with idempotent JSON merging and `.bak` backups. Replaces the `bash cursor/install-cursor-config.sh` step so a fresh install is now just `uv tool install git+... && curios cursor install`. Cross-platform (Linux/macOS) via `shutil.which` and `pathlib`.
+- **Install skill:** ships a `curios-install` Cursor skill that guides the agent through end-to-end setup conversationally; bootstrappable on a fresh machine with a single `curl` command.
+- **Package data:** `curios.mdc` and `skill.md` now live in `src/curios/cursor/` and are bundled into the wheel via `[tool.setuptools.package-data]`; `curios cursor install` reads them through `importlib.resources`, so no repo clone is required.
+- **Repository cleanup:** removed the now-redundant `cursor/` directory (shell script, duplicate `.mdc`, JSON entry fragments, duplicate skill file) — single source of truth under `src/curios/cursor/`.
+
 ## 0.2.0 — 2026-04-15
 
 - **Import/export:** `curios-maintain export` writes a `.tar.gz` of raw transcript `.jsonl` files plus `manifest.json` (optional `--project` filter). `curios-maintain import` unpacks into `~/.cursor/projects/curios-import-<encoded>/agent-transcripts/` and runs the indexer; supports `--project`, `--dry-run`, and `--force`. Replaced the previous JSON dump of ChromaDB chunks.

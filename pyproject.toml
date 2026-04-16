@@ -1,6 +1,6 @@
 [project]
 name = "curios"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cross-project transcript memory for Cursor IDE"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
+curios = "curios.install:main"
 curios-server = "curios.server:main"
 curios-index = "curios.indexer:main"
 curios-maintain = "curios.maintain:main"
@@ -21,7 +22,14 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+curios = ["cursor/*.mdc", "cursor/*.md"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+]
+eval = [
+    "deepeval>=3.9",
+    "anthropic>=0.40",
 ]
