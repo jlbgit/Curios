@@ -58,12 +58,33 @@ Then open any Cursor project and say: *"Install Curios for me."*
 
 ```bash
 git clone https://github.com/jlbgit/Curios ~/Applications/Curios
+cd ~/Applications/Curios
+git config core.hooksPath .githooks    # enable pre-commit guard (see below)
 uv tool install -e ~/Applications/Curios
 curios cursor install
 
 # After code changes, reinstall to update entry points
 uv tool install --reinstall -e ~/Applications/Curios
 ```
+
+#### Pre-commit guard
+
+The repo ships a pre-commit hook at `.githooks/pre-commit` that blocks any
+attempt to commit conversation data, transcript archives, local databases, or
+secrets — even when bypassing `.gitignore` with `git add -f`. It scans staged
+paths (`tests/eval/fixtures/*.json`, `*.jsonl`, `transcripts/`,
+`curios-export*.tar.gz`, `.env`, `*.sqlite3`, `chromadb/`) and content (live
+API keys, private keys, conversation markers).
+
+Git's `core.hooksPath` is a per-clone local setting, so enable it once per
+fresh clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+To override in an emergency: `git commit --no-verify` (only when you are
+certain the content is safe).
 
 ### Manual Cursor setup
 

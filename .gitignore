@@ -16,6 +16,32 @@ build/
 # Local planning (not versioned)
 TODO.md
 
+# Secrets / local env (never commit)
+.env
+.env.*
+*.env
+!.env.example
+
+# Generated / local state
+.cursor/
+.deepeval/
+graphify-out/
+.pytest_cache/
+
+# Conversation / transcript data — NEVER commit
+# Eval fixtures contain ground-truth derived from real conversations
+tests/eval/fixtures/*.json
+# Raw Cursor transcripts and Curios export/import archives
+*.jsonl
+transcripts/
+curios-export*.tar.gz
+curios-export*.tgz
+manifest.json
+# Local Chroma DB in case CURIOS_DATA ever points at the repo
+chromadb/
+*.sqlite3
+*.sqlite3-journal
+
 # Editor / OS
 .DS_Store
 .idea/

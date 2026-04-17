@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Repository hygiene:** hardened `.gitignore` to cover `.env` files, eval fixtures (`tests/eval/fixtures/*.json`), raw transcripts (`*.jsonl`), export archives (`curios-export*.tar.gz`), local ChromaDB files (`chromadb/`, `*.sqlite3`), and generated state (`graphify-out/`, `.deepeval/`, `.cursor/`, `.pytest_cache/`).
+- **Pre-commit guard:** added `.githooks/pre-commit` that blocks commits of conversation data, transcripts, databases, and secrets (live API keys, private keys) even when staged with `git add -f`. Enable per clone with `git config core.hooksPath .githooks`; documented in the Development install section of the README.
+
 ## 0.3.0 — 2026-04-16
 
 - **Install flow:** new `curios` CLI with `curios cursor install` / `curios cursor uninstall` — deploys MCP server entry, session hook, AI rule, and install skill into `~/.cursor/` with idempotent JSON merging and `.bak` backups. Replaces the `bash cursor/install-cursor-config.sh` step so a fresh install is now just `uv tool install git+... && curios cursor install`. Cross-platform (Linux/macOS) via `shutil.which` and `pathlib`.

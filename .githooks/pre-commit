@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Curios pre-commit guard: block conversation data, transcripts, DB files, secrets.
+# Install once per clone with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+fail=0
+report() { echo "pre-commit: $1" >&2; fail=1; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# --- 1. Forbidden paths / extensions -----------------------------------------
+while IFS= read -r f; do
+    case "$f" in
+        tests/eval/fixtures/*.json)  report "conversation fixture blocked: $f" ;;
+        *.jsonl)                      report "raw transcript blocked: $f" ;;
+        transcripts/*|*/transcripts/*) report "transcripts dir blocked: $f" ;;
+        curios-export*.tar.gz|curios-export*.tgz) report "export archive blocked: $f" ;;
+        *.env|*/.env)                 report "env file blocked: $f" ;;
+        *.sqlite3|*.sqlite3-journal)  report "sqlite DB blocked: $f" ;;
+        chromadb/*|*/chromadb/*)      report "chroma DB blocked: $f" ;;
+    esac
+done <<< "$staged"
+
+# --- 2. Content patterns (secrets + conversation markers) --------------------
+# Only scan text files; skip binary/archive blobs and this hook itself
+# (the hook legitimately contains the patterns it searches for).
+text_files=$(echo "$staged" | grep -Ev '\.(jsonl|sqlite3|sqlite3-journal|tar\.gz|tgz|png|jpg|jpeg|gif|pdf|lock)$' | grep -v '^\.githooks/' || true)
+if [ -n "$text_files" ]; then
+    patterns='sk-ant-api03-|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-|AKIA[0-9A-Z]{16}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|"conversation_id"\s*:|"agent-transcripts"|<user_query>|<assistant_response>'
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        [ -f "$f" ] || continue
+        if git show ":$f" 2>/dev/null | grep -EIn "$patterns" >/dev/null 2>&1; then
+            hit=$(git show ":$f" | grep -EIn "$patterns" | head -3)
+            report "suspicious content in $f:"
+            echo "$hit" | sed 's/^/              /' >&2
+        fi
+    done <<< "$text_files"
+fi
+
+if [ "$fail" -ne 0 ]; then
+    cat >&2 <<EOF
+
+Commit rejected by .githooks/pre-commit.
+If you are SURE this content is safe, bypass with:  git commit --no-verify
+EOF
+    exit 1
+fi
+exit 0
