@@ -44,21 +44,33 @@ NOVELTY_N_RESULTS = 8
 
 # ── Topic scoring ───────────────────────────────────────────
 # Each chunk's user+assistant text is scanned for keyword hits.
-# User text hits are multiplied by USER_WEIGHT (higher → user phrasing
-# matters more than assistant boilerplate for topic assignment).
-USER_WEIGHT = 2
-# Minimum total weighted hits required to assign a topic to a chunk.
-# Topics with many keywords (architecture: 17, decisions: 20) naturally
-# accumulate more hits, so a higher default avoids over-tagging.
-TOPIC_MIN_HITS_DEFAULT = 4
-# Per-topic overrides for high-signal topics with fewer keywords.
+# Per-topic role weights (user, agent) sum to 3.0 so topics stay comparable.
+# Asymmetry reflects which voice typically originates each topic — e.g.
+# "preferences" is almost always user-voiced, "learnings" almost always
+# agent-synthesized from research/tool output.
+TOPIC_ROLE_WEIGHTS: dict[str, tuple[float, float]] = {
+    "preferences":  (2.7, 0.3),
+    "learnings":    (0.5, 2.5),
+    "architecture": (1.0, 2.0),
+    "decisions":    (2.0, 1.0),
+    "problems":     (1.5, 1.5),
+    "ideas":        (1.5, 1.5),
+    "open_issues":  (1.5, 1.5),
+}
+_DEFAULT_ROLE_WEIGHTS: tuple[float, float] = (2.0, 1.0)
+TOPIC_MIN_HITS_DEFAULT = 2
 TOPIC_MIN_HITS: dict[str, int] = {
     "preferences": 2,
     "open_issues": 2,
     "ideas": 2,
+    "learnings": 2,
 }
 
 # ── Search ranking ──────────────────────────────────────────
+# Max chunks returned per conversation in a single search.
+# Default 1 maximises conversation diversity; raising to 2 improves recall
+# for long conversations that contain multiple relevant exchanges.
+MAX_CHUNKS_PER_CONV = 2
 # Distance multiplier applied to "incremental" chunks during search.
 # Values > 1.0 push redundant content lower in results.
 INCREMENTAL_PENALTY = 1.15
@@ -68,6 +80,11 @@ DECISION_BOOST = 0.82
 # Over-fetch multiplier: raw results fetched = n_results * this factor.
 # Higher → better reranking quality but slower queries.
 SEARCH_OVERFETCH_FACTOR = 8
+# When a topic filter is set, topic-tagged chunks must survive a post-filter
+# step. Since Chroma cannot filter by topic substring natively, we enlarge the
+# candidate pool so all topic-tagged chunks in scope are considered.
+TOPIC_FILTER_OVERFETCH = 50
+TOPIC_FILTER_FETCH_MIN = 500
 # Max characters returned per result in search and recap responses.
 SEARCH_MAX_TEXT = 8_000
 RECAP_PREVIEW_MAX = 600
@@ -128,27 +145,43 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "estructura",
         "flujo",
     ),
-    "planning": (
-        "plan",
-        "roadmap",
-        "milestone",
-        "sprint",
-        "scope",
-        "requirement",
-        "requisito",
-        "deadline",
-        "timeline",
-        "backlog",
-        "epic",
-        "deliverable",
-        "entregable",
-        "capítulo",
-        "sección",
+    "learnings": (
+        "according to",
+        "the paper",
+        "the documentation",
+        "documentation says",
+        "research shows",
+        "research suggests",
+        "the study",
+        "benchmark",
+        "i found that",
+        "i learned",
+        "turns out",
+        "it appears that",
+        "key finding",
+        "the takeaway",
+        "in summary",
+        "to summarize",
+        "based on my analysis",
+        "the data shows",
+        "results show",
+        "web search",
+        "search results",
+        "the results indicate",
+        "measured",
+        "observed that",
+        "confirmed that",
         # Spanish
-        "hoja de ruta",
-        "plazo",
-        "alcance",
-        "objetivo",
+        "según",
+        "la investigación",
+        "resulta que",
+        "el análisis muestra",
+        "los datos muestran",
+        "en resumen",
+        "encontré que",
+        "aprendí que",
+        "el resultado",
+        "se confirma",
     ),
     "problems": (
         "bug",

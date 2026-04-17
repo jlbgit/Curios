@@ -36,8 +36,9 @@ from curios.config import (
     TOPIC_KEYWORDS,
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
+    TOPIC_ROLE_WEIGHTS,
     TRANSCRIPTS_BASE,
-    USER_WEIGHT,
+    _DEFAULT_ROLE_WEIGHTS,
     conversation_id_from_path,
     extract_project_name,
     redact_secrets,
@@ -174,20 +175,36 @@ def _keyword_hits(text: str, keywords: tuple[str, ...]) -> int:
 
 
 def _score_topics(user_text: str, assistant_text: str) -> str:
-    hits: list[str] = []
+    """Assign topics using per-topic role weights.
+
+    Two-tier tagging:
+    1. Confident: any topic with weighted score >= threshold is included.
+    2. Fallback: if no topic clears the threshold but the best-scoring topic
+       has any signal (>0), tag that single topic. This avoids mis-tagging
+       weakly-signalled content as "general".
+    Only truly zero-signal chunks fall back to "general".
+    """
+    scores: dict[str, float] = {}
     for topic, keywords in TOPIC_KEYWORDS.items():
         if topic == "general":
             continue
-        score = (
-            _keyword_hits(user_text, keywords) * USER_WEIGHT
-            + _keyword_hits(assistant_text, keywords)
+        user_w, agent_w = TOPIC_ROLE_WEIGHTS.get(topic, _DEFAULT_ROLE_WEIGHTS)
+        scores[topic] = (
+            _keyword_hits(user_text, keywords) * user_w
+            + _keyword_hits(assistant_text, keywords) * agent_w
         )
-        threshold = TOPIC_MIN_HITS.get(topic, TOPIC_MIN_HITS_DEFAULT)
-        if score >= threshold:
-            hits.append(topic)
-    if not hits:
-        return "general"
-    return ",".join(sorted(set(hits)))
+
+    confident = [
+        t for t, s in scores.items()
+        if s >= TOPIC_MIN_HITS.get(t, TOPIC_MIN_HITS_DEFAULT)
+    ]
+    if confident:
+        return ",".join(sorted(set(confident)))
+
+    best_topic = max(scores, key=lambda t: scores[t]) if scores else None
+    if best_topic and scores[best_topic] > 0:
+        return best_topic
+    return "general"
 
 
 def _chunk_exchange(user: str, assistant: str) -> list[str]:
