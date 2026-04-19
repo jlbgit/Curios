@@ -73,10 +73,14 @@ def cmd_cursor_install() -> int:
     (rules_dir / "curios.mdc").write_text(_package_text("curios.mdc"), encoding="utf-8")
     print(f"Rule:  {rules_dir / 'curios.mdc'}")
 
-    skill_dir = cursor_home / "skills" / "curios-install"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(_package_text("skill.md"), encoding="utf-8")
-    print(f"Skill: {skill_dir / 'SKILL.md'}")
+    for skill_file, skill_name in [
+        ("skill.md", "curios-install"),
+        ("keyword-discovery.md", "curios-keyword-discovery"),
+    ]:
+        skill_dir = cursor_home / "skills" / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(_package_text(skill_file), encoding="utf-8")
+        print(f"Skill: {skill_dir / 'SKILL.md'}")
 
     print("\nDone. Restart Cursor for changes to take effect.")
     return 0
@@ -112,12 +116,13 @@ def cmd_cursor_uninstall() -> int:
     else:
         print(f"Rule:  {mdc} not found (skipped)")
 
-    skill_dir = cursor_home / "skills" / "curios-install"
-    if skill_dir.exists():
-        shutil.rmtree(skill_dir)
-        print(f"Skill: removed {skill_dir}")
-    else:
-        print(f"Skill: {skill_dir} not found (skipped)")
+    for skill_name in ["curios-install", "curios-keyword-discovery"]:
+        skill_dir = cursor_home / "skills" / skill_name
+        if skill_dir.exists():
+            shutil.rmtree(skill_dir)
+            print(f"Skill: removed {skill_dir}")
+        else:
+            print(f"Skill: {skill_dir} not found (skipped)")
 
     print("\nDone. Restart Cursor for changes to take effect.")
     return 0

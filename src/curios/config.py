@@ -1,5 +1,6 @@
 import base64
 import binascii
+import json
 import os
 import re
 from pathlib import Path
@@ -10,6 +11,7 @@ CURIOS_DATA = Path(os.environ.get("CURIOS_DATA", Path.home() / ".local" / "share
 CHROMADB_PATH = CURIOS_DATA / "chromadb"
 TRANSCRIPTS_BASE = CURSOR_HOME / "projects"
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md"
+CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"
 LOCK_PATH = CURIOS_DATA / ".index.lock"
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"
@@ -70,7 +72,7 @@ TOPIC_MIN_HITS: dict[str, int] = {
 # Max chunks returned per conversation in a single search.
 # Default 1 maximises conversation diversity; raising to 2 improves recall
 # for long conversations that contain multiple relevant exchanges.
-MAX_CHUNKS_PER_CONV = 2
+MAX_CHUNKS_PER_CONV = 3
 # Distance multiplier applied to "incremental" chunks during search.
 # Values > 1.0 push redundant content lower in results.
 INCREMENTAL_PENALTY = 1.15
@@ -211,8 +213,10 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "preferences": (
         "i prefer",
         "i'd rather",
+        "i'd like",
         "i like to",
-        "i want",
+        "i want to",
+        "i feel",
         "i always",
         "i never",
         "always use",
@@ -225,15 +229,23 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "my convention",
         "my style",
         "my rule",
+        "my preference",
         "our team uses",
+        "our convention",
+        "please don't",
+        "please avoid",
+        "i don't like",
+        "i don't want",
         # Spanish
         "prefiero",
+        "me gustaría",
         "por favor no",
-        "me gusta",
+        "por favor evita",
         "siempre uso",
         "nunca uses",
-        "quiero que",
         "mi convención",
+        "mi preferencia",
+        "no me gusta",
         "nuestro equipo",
     ),
     "ideas": (
@@ -241,9 +253,12 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "what about",
         "maybe we could",
         "we could",
+        "how about",
         "nice to have",
         "nice-to-have",
         "worth exploring",
+        "worth trying",
+        "worth considering",
         "future",
         "prototype",
         "experiment",
@@ -251,23 +266,65 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "spike",
         "explore",
         "might be worth",
+        "could try",
+        "idea:",
+        "one idea",
+        "another idea",
+        "alternative approach",
+        "an option",
+        "possible approach",
+        "stretch goal",
+        "down the road",
+        "longer term",
+        "eventually",
         # Spanish
         "qué tal si",
         "podríamos",
         "estaría bien",
         "a futuro",
         "y si",
+        "otra idea",
+        "una opción",
+        "posible enfoque",
+        "a largo plazo",
     ),
     "open_issues": (
         "todo",
         "fixme",
+        "hack",
         "still need to",
         "haven't yet",
+        "hasn't been",
         "pending",
         "not yet implemented",
+        "not yet done",
         "follow-up",
+        "follow up",
         "open question",
         "blocked",
+        "needs work",
+        "needs fixing",
+        "needs attention",
+        "needs tightening",
+        "not addressed",
+        "unresolved",
+        "left to do",
+        "remaining work",
+        "should revisit",
+        "revisit",
+        "come back to",
+        "circle back",
+        "defer",
+        "deferred",
+        "postpone",
+        "known issue",
+        "known limitation",
+        "missing",
+        "incomplete",
+        "inconsistenc",
+        "workaround in place",
+        "temporary fix",
+        "temp fix",
         # Spanish
         "falta",
         "hace falta",
@@ -276,9 +333,34 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "pregunta abierta",
         "bloqueado",
         "sin implementar",
+        "sin resolver",
+        "pendiente",
+        "hay que volver",
+        "problema conocido",
+        "incompleto",
     ),
     "general": (),
 }
+
+
+def get_topic_keywords() -> dict[str, tuple[str, ...]]:
+    """Merge default TOPIC_KEYWORDS with user-specific custom_keywords.json."""
+    if not CUSTOM_KEYWORDS_PATH.exists():
+        return TOPIC_KEYWORDS
+    try:
+        custom: dict[str, list[str]] = json.loads(
+            CUSTOM_KEYWORDS_PATH.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError):
+        return TOPIC_KEYWORDS
+    merged: dict[str, tuple[str, ...]] = {}
+    for topic, defaults in TOPIC_KEYWORDS.items():
+        extras = custom.get(topic, [])
+        existing = set(k.lower() for k in defaults)
+        new = tuple(k for k in extras if k.lower() not in existing)
+        merged[topic] = defaults + new
+    return merged
+
 
 PROJECT_NAME_OVERRIDES: dict[str, str] = {}
 

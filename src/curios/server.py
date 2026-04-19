@@ -22,8 +22,8 @@ from curios.config import (
     SEARCH_OVERFETCH_FACTOR,
     TOPIC_FILTER_FETCH_MIN,
     TOPIC_FILTER_OVERFETCH,
-    TOPIC_KEYWORDS,
     TRANSCRIPTS_BASE,
+    get_topic_keywords,
 )
 
 mcp = FastMCP("curios")
@@ -57,7 +57,7 @@ def _topic_match(meta_topics: str | None, wanted: str) -> bool:
 
 def _decision_boost_query(query: str) -> bool:
     q = query.lower()
-    return any(k.lower() in q for k in TOPIC_KEYWORDS["decisions"])
+    return any(k.lower() in q for k in get_topic_keywords()["decisions"])
 
 
 def _rank_distance(

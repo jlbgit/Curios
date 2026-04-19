@@ -33,12 +33,12 @@ from curios.config import (
     SCHEMA_VERSION,
     SENTINEL_COLLECTION_NAME,
     SHALLOW_THRESHOLD,
-    TOPIC_KEYWORDS,
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
     TOPIC_ROLE_WEIGHTS,
     TRANSCRIPTS_BASE,
     _DEFAULT_ROLE_WEIGHTS,
+    get_topic_keywords,
     conversation_id_from_path,
     extract_project_name,
     redact_secrets,
@@ -185,7 +185,7 @@ def _score_topics(user_text: str, assistant_text: str) -> str:
     Only truly zero-signal chunks fall back to "general".
     """
     scores: dict[str, float] = {}
-    for topic, keywords in TOPIC_KEYWORDS.items():
+    for topic, keywords in get_topic_keywords().items():
         if topic == "general":
             continue
         user_w, agent_w = TOPIC_ROLE_WEIGHTS.get(topic, _DEFAULT_ROLE_WEIGHTS)
