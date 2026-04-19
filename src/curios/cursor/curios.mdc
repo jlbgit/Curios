@@ -17,7 +17,7 @@ Cross-project transcript memory via MCP. Call tools with `server: "user-curios"`
 | `curios_status` | `{}` | User asks about indexing status or DB stats |
 | `curios_preferences` | `{}` | User's personal habits or house style matter for the task |
 
-Search topics: `decisions`, `architecture`, `planning`, `problems`, `preferences`, `ideas`, `open_issues`.
+Search topics: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues`.
 
 ## Rules
 
