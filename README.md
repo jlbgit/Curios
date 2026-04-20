@@ -59,7 +59,6 @@ Then open any Cursor project and say: *"Install Curios for me."*
 ```bash
 git clone https://github.com/jlbgit/Curios ~/Applications/Curios
 cd ~/Applications/Curios
-git config core.hooksPath .githooks    # enable pre-commit guard (see below)
 uv tool install -e ~/Applications/Curios
 curios cursor install
 
@@ -67,24 +66,12 @@ curios cursor install
 uv tool install --reinstall -e ~/Applications/Curios
 ```
 
-#### Pre-commit guard
+#### Repository hygiene
 
-The repo ships a pre-commit hook at `.githooks/pre-commit` that blocks any
-attempt to commit conversation data, transcript archives, local databases, or
-secrets — even when bypassing `.gitignore` with `git add -f`. It scans staged
-paths (`tests/eval/fixtures/*.json`, `*.jsonl`, `transcripts/`,
-`curios-export*.tar.gz`, `.env`, `*.sqlite3`, `chromadb/`) and content (live
-API keys, private keys, conversation markers).
-
-Git's `core.hooksPath` is a per-clone local setting, so enable it once per
-fresh clone:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-To override in an emergency: `git commit --no-verify` (only when you are
-certain the content is safe).
+Sensitive paths (transcripts, eval fixtures, exports, `.env`, local DBs) are
+listed in `.gitignore` so they are not committed by normal workflow. For
+secrets accidentally committed in other files, enable **GitHub push
+protection** on the repo (**Settings > Code security and analysis**).
 
 ### Manual Cursor setup
 
@@ -287,3 +274,7 @@ A formatted report with sections:
 ## Security
 
 Secrets are redacted before storage (API keys, passwords, tokens — see `config.py`). ChromaDB is read-only from MCP. All results wrapped in `[CURIOS RESULT]` delimiters for prompt-injection hygiene.
+
+## Disclaimer
+
+This is experimental software provided "AS IS". See [DISCLAIMER.md](DISCLAIMER.md) for full terms.
