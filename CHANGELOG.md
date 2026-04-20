@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Repository hygiene:** hardened `.gitignore` to cover `.env` files, eval fixtures (`tests/eval/fixtures/*.json`), raw transcripts (`*.jsonl`), export archives (`curios-export*.tar.gz`), local ChromaDB files (`chromadb/`, `*.sqlite3`), and generated state (`graphify-out/`, `.deepeval/`, `.cursor/`, `.pytest_cache/`).
-- **Pre-commit guard:** added `.githooks/pre-commit` that blocks commits of conversation data, transcripts, databases, and secrets (live API keys, private keys) even when staged with `git add -f`. Enable per clone with `git config core.hooksPath .githooks`; documented in the Development install section of the README.
+- **Pre-commit hook removed:** rely on `.gitignore` plus GitHub push protection for secrets; README documents the hygiene approach.
 
 ## 0.3.0 — 2026-04-16
 
