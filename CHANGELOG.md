@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Recall improvements:** systematic evaluation-driven tuning of search and topic scoring, improving average recall from 0.07 to 0.45 on the archABM benchmark while keeping faithfulness at 0.98.
+- **Per-topic role weights:** replaced the global `USER_WEIGHT=2` with per-topic `(user, agent)` weight tuples summing to 3.0. Preferences are strongly user-biased (2.7/0.3), learnings are agent-biased (0.5/2.5), and collaborative topics like problems/ideas/open_issues are balanced (1.5/1.5). Configured in `TOPIC_ROLE_WEIGHTS`.
+- **New `learnings` topic:** replaced `planning` (which scored poorly in evaluation) with `learnings` — captures research findings, documentation synthesis, web search results, and analysis outputs. Agent-biased role weight reflects that these are typically agent-synthesized.
+- **Two-tier topic tagging:** topics above threshold are multi-tagged (as before), but chunks below threshold with any keyword signal now get tagged with their best-scoring topic instead of falling back to `general`. Only truly zero-signal chunks are tagged `general`. Eliminates false-negative topic filtering.
+- **Topic threshold lowered:** `TOPIC_MIN_HITS_DEFAULT` reduced from 4 to 2, aligning with the per-topic role weight system where a single user keyword in a high-weight topic is meaningful.
+- **Multi-chunk per conversation:** search deduplication now allows up to `MAX_CHUNKS_PER_CONV` (3) chunks per conversation instead of the previous hard limit of 1, improving recall for long conversations with multiple relevant exchanges.
+- **Topic-first overfetch:** when a topic filter is set, the candidate pool is enlarged (50x overfetch, min 500 candidates) so topic-tagged chunks aren't drowned out by semantically similar but differently-tagged content in the standard top-120 window.
 - **Repository hygiene:** hardened `.gitignore` to cover `.env` files, eval fixtures (`tests/eval/fixtures/*.json`), raw transcripts (`*.jsonl`), export archives (`curios-export*.tar.gz`), local ChromaDB files (`chromadb/`, `*.sqlite3`), and generated state (`graphify-out/`, `.deepeval/`, `.cursor/`, `.pytest_cache/`).
 - **Pre-commit hook removed:** rely on `.gitignore` plus GitHub push protection for secrets; README documents the hygiene approach.
 

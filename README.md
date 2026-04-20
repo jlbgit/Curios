@@ -197,7 +197,7 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 |---|---|---|
 | `query` | (required) | Natural-language semantic query |
 | `project` | `null` | Limit to one project (e.g. `"NEOTEC"`). Omit for cross-project. |
-| `topic` | `null` | Filter: `decisions`, `architecture`, `planning`, `problems`, `preferences`, `ideas`, `open_issues` |
+| `topic` | `null` | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
 | `strict` | `false` | If true, hard-exclude `incremental` chunks (only truly novel content) |
 | `include_shallow` | `false` | If true, include conversations with < 2 user messages |
 | `n_results` | `5` | Max results returned |
@@ -205,25 +205,35 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 **Default behavior** (`strict=false`, `include_shallow=false`):
 - Excludes shallow conversations (< 2 user messages)
 - Includes all novelty levels, but demotes incremental chunks in ranking (x1.15 distance penalty)
-- Deduplicates by `conversation_id` (best chunk per conversation)
+- Limits to `MAX_CHUNKS_PER_CONV` (3) chunks per conversation for diversity, while allowing multiple relevant exchanges from the same conversation
 - Groups results by project when no `project` filter is set
 - Boosts `decisions`-tagged chunks when the query matches decision keywords
+
+**Topic-filtered search** (`topic=...`): uses an enlarged candidate pool (50x overfetch, min 500 candidates) before post-filtering by topic. This prevents topic-tagged chunks from being drowned out by semantically similar but differently-tagged content.
 
 **Strict mode** (`strict=true`): same as default, plus hard-excludes incremental chunks entirely.
 
 **Full search** (`include_shallow=true`): includes everything.
 
-**Token cost:** ~1,500 tokens per search (5 results x ~300 tokens each).
-
 ## Topic Detection
 
-Topics are scored per exchange (user+assistant pair). User text gets 2x weight.
+Topics are scored per exchange (user+assistant pair) using **per-topic role weights** that reflect which voice typically originates each topic. Weights are (user, agent) tuples summing to 3.0:
 
-| Topic | Threshold | Rationale |
-|---|---|---|
-| `preferences`, `open_issues`, `ideas` | 2 (= 1 user keyword) | High-specificity keywords |
-| `decisions`, `architecture`, `planning`, `problems` | 4 (= 2 user keywords or 1 user + 2 assistant) | Broader keywords need co-occurrence |
-| `general` | fallback | No topic scored above threshold |
+| Topic | User weight | Agent weight | Rationale |
+|---|---|---|---|
+| `preferences` | 2.7 | 0.3 | Almost always user-voiced ("I prefer…") |
+| `learnings` | 0.5 | 2.5 | Agent-synthesized from research/tools/PDFs |
+| `architecture` | 1.0 | 2.0 | Agent typically explains structure |
+| `decisions` | 2.0 | 1.0 | User approves, agent proposes |
+| `problems` | 1.5 | 1.5 | Both report and identify |
+| `ideas` | 1.5 | 1.5 | Collaborative |
+| `open_issues` | 1.5 | 1.5 | Collaborative |
+
+Default threshold is 2 for all topics (overridden per-topic in `TOPIC_MIN_HITS`).
+
+**Two-tier tagging:**
+1. **Confident** — any topic with weighted score ≥ threshold is included (multi-tagging).
+2. **Fallback** — if no topic clears the threshold but the best-scoring topic has any signal (> 0), that single topic is assigned. Only truly zero-signal chunks fall back to `general`.
 
 Keywords include Spanish terms and informal expressions.
 
