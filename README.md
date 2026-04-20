@@ -152,7 +152,7 @@ export CURIOS_DATA=~/my-curios-data
 curios-index
 ```
 
-For the MCP server and session hook (which are launched by Cursor, not your shell), set environment variables in `~/.cursor/mcp.json`:
+For the MCP server and session hook (which are launched by Cursor, not your shell), set environment variables in `~/.cursor/mcp.json` (replace `/your/custom/curios-data` with your actual path):
 
 ```json
 {
@@ -160,7 +160,7 @@ For the MCP server and session hook (which are launched by Cursor, not your shel
     "curios": {
       "command": "/FULL/PATH/TO/.local/bin/curios-server",
       "env": {
-        "CURIOS_DATA": "/home/you/my-curios-data"
+        "CURIOS_DATA": "/your/custom/curios-data"
       }
     }
   }

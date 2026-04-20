@@ -30,7 +30,8 @@ graphify-out/
 
 # Conversation / transcript data — NEVER commit
 # Eval fixtures contain ground-truth derived from real conversations
-tests/eval/fixtures/*.json
+tests/eval/fixtures/
+tests/eval/.env
 # Raw Cursor transcripts and Curios export/import archives
 *.jsonl
 transcripts/
@@ -41,6 +42,9 @@ manifest.json
 chromadb/
 *.sqlite3
 *.sqlite3-journal
+
+# Tool config files that are local-only
+.graphifyignore
 
 # Editor / OS
 .DS_Store
