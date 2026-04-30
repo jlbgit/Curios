@@ -187,11 +187,8 @@ Restart Cursor after the first command.
 
 | Tool | Purpose |
 |---|---|
-| `curios_search` | Semantic search across transcripts (cross-project) |
-| `curios_recap` | Session recap: most recent conversations for a project, time-ordered |
+| `curios_search` | Semantic search across transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered) |
 | `curios_related` | Given a conversation_id, find related content in other conversations/projects |
-| `curios_status` | Chunk counts, per-project totals, topic distribution, DB size, last indexing run (`last_indexed`) and log path (`index_log`) |
-| `curios_preferences` | Returns `preferences.md` contents |
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.
 
@@ -201,7 +198,7 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 
 | Param | Default | Effect |
 |---|---|---|
-| `query` | (required) | Natural-language semantic query |
+| `query` | `null` | Natural-language semantic query. Omit for recap mode (most recent conversations, time-ordered) |
 | `project` | `null` | Limit to one project (e.g. `"NEOTEC"`). Omit for cross-project. |
 | `topic` | `null` | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
 | `strict` | `false` | If true, hard-exclude `incremental` chunks (only truly novel content) |
