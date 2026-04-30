@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -42,6 +43,54 @@ def _resolve_binary(name: str) -> str:
 
 def _package_text(name: str) -> str:
     return (files("curios") / "cursor" / name).read_text(encoding="utf-8")
+
+
+# Maps package resource name → relative path under ~/.cursor/
+_CURSOR_DEPLOYMENTS: list[tuple[str, str]] = [
+    ("curios.mdc",           "rules/curios.mdc"),
+    ("skill.md",             "skills/curios-install/SKILL.md"),
+    ("keyword-discovery.md", "skills/curios-keyword-discovery/SKILL.md"),
+]
+
+
+def _file_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def staleness_report(cursor_home: Path | None = None) -> list[tuple[str, Path, bool]]:
+    """Return (pkg_name, deployed_path, is_stale) for each managed Cursor file.
+
+    A file is stale when the deployed copy doesn't exist or its content differs
+    from the package source.  Callers can use this to warn users or automate
+    re-deployment.
+    """
+    home = cursor_home or _cursor_home()
+    results: list[tuple[str, Path, bool]] = []
+    for pkg_name, rel_path in _CURSOR_DEPLOYMENTS:
+        deployed = home / rel_path
+        try:
+            pkg_text = _package_text(pkg_name)
+        except Exception:
+            continue
+        if not deployed.exists():
+            results.append((pkg_name, deployed, True))
+        else:
+            stale = _file_hash(pkg_text) != _file_hash(deployed.read_text(encoding="utf-8"))
+            results.append((pkg_name, deployed, stale))
+    return results
+
+
+def cmd_cursor_check() -> int:
+    report = staleness_report()
+    any_stale = any(stale for _, _, stale in report)
+    for pkg_name, path, stale in report:
+        tag = "STALE" if stale else "OK   "
+        print(f"  {tag}  {path}")
+    if any_stale:
+        print("\nRun 'curios cursor install' to sync stale files.")
+        return 1
+    print("\nAll Cursor files are up to date.")
+    return 0
 
 
 def cmd_cursor_install() -> int:
@@ -134,8 +183,9 @@ def _cli() -> int:
 
     cursor_p = sub.add_parser("cursor", help="Cursor IDE integration")
     cursor_sub = cursor_p.add_subparsers(dest="action", required=True)
-    cursor_sub.add_parser("install", help="Install MCP server, session hook, AI rule, and install skill")
+    cursor_sub.add_parser("install", help="Install MCP server, session hook, AI rule, and skills")
     cursor_sub.add_parser("uninstall", help="Remove all Cursor integration")
+    cursor_sub.add_parser("check", help="Check whether deployed Cursor files are up to date")
 
     args = ap.parse_args()
     if args.cmd == "cursor":
@@ -143,6 +193,8 @@ def _cli() -> int:
             return cmd_cursor_install()
         if args.action == "uninstall":
             return cmd_cursor_uninstall()
+        if args.action == "check":
+            return cmd_cursor_check()
     return 1
 
 

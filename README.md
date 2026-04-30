@@ -16,7 +16,7 @@ This creates an isolated virtual environment and places four entry points on you
 
 | Command | Purpose |
 |---|---|
-| `curios` | Install / uninstall Cursor integration |
+| `curios` | Manage Cursor integration (`install`, `uninstall`, `check`) |
 | `curios-server` | MCP server (started by Cursor) |
 | `curios-index` | Transcript indexer + session hook |
 | `curios-maintain` | Maintenance CLI (status, stats, verify, reindex, prune, export) |
@@ -32,6 +32,12 @@ This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies 
 **Restart Cursor** after running this.
 
 To undo all changes: `curios cursor uninstall`.
+
+After any `uv tool install --reinstall`, re-run `curios cursor install` to keep the deployed rule and skills in sync with the new package. You can check whether they are current at any time:
+
+```bash
+curios cursor check
+```
 
 ### Step 3: Initial indexing
 

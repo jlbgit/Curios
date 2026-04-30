@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Annotated, Any
 
 import chromadb
@@ -389,4 +390,15 @@ def curios_preferences() -> str:
 
 
 def main() -> None:
+    try:
+        from curios.install import staleness_report
+        stale = [pkg for pkg, _, is_stale in staleness_report() if is_stale]
+        if stale:
+            print(
+                f"[curios] WARNING: deployed Cursor files are stale ({', '.join(stale)}). "
+                "Run 'curios cursor install' to sync.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
     mcp.run()

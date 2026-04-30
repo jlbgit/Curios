@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`curios cursor check`:** new subcommand that compares SHA-256 hashes of the deployed rule and skill files against the package source and reports which are stale. Exit code 1 if any are out of date; 0 if all match. Use after `uv tool install --reinstall` to confirm Cursor files are current.
+- **Server startup staleness warning:** `curios-server` now checks deployed file hashes at startup and emits a `[curios] WARNING` to stderr if any are stale, pointing to `curios cursor install`. The check is fast (three small file reads) and silently swallowed if anything goes wrong.
 - **Recall improvements:** systematic evaluation-driven tuning of search and topic scoring, improving average recall from 0.07 to 0.45 on the archABM benchmark while keeping faithfulness at 0.98.
 - **Per-topic role weights:** replaced the global `USER_WEIGHT=2` with per-topic `(user, agent)` weight tuples summing to 3.0. Preferences are strongly user-biased (2.7/0.3), learnings are agent-biased (0.5/2.5), and collaborative topics like problems/ideas/open_issues are balanced (1.5/1.5). Configured in `TOPIC_ROLE_WEIGHTS`.
 - **New `learnings` topic:** replaced `planning` (which scored poorly in evaluation) with `learnings` — captures research findings, documentation synthesis, web search results, and analysis outputs. Agent-biased role weight reflects that these are typically agent-synthesized.
