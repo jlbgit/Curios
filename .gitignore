@@ -35,8 +35,8 @@ tests/eval/.env
 # Raw Cursor transcripts and Curios export/import archives
 *.jsonl
 transcripts/
-curios-export*.tar.gz
-curios-export*.tgz
+curios-*.tar.gz
+curios-*.tgz
 manifest.json
 # Local Chroma DB in case CURIOS_DATA ever points at the repo
 chromadb/

@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-05-04
 
+- **MCP tool consolidation:** reduced from 5 tools to 2 (`curios_search`, `curios_related`). Recap mode is now built into `curios_search` (omit `query`); `curios_status` and `curios_preferences` removed — use `curios-maintain status` and edit `preferences.md` directly instead.
 - **`curios cursor check`:** new subcommand that compares SHA-256 hashes of the deployed rule and skill files against the package source and reports which are stale. Exit code 1 if any are out of date; 0 if all match. Use after `uv tool install --reinstall` to confirm Cursor files are current.
 - **Server startup staleness warning:** `curios-server` now checks deployed file hashes at startup and emits a `[curios] WARNING` to stderr if any are stale, pointing to `curios cursor install`. The check is fast (three small file reads) and silently swallowed if anything goes wrong.
+- **Keyword discovery skill:** new `curios-keyword-discovery` skill scans real conversation transcripts to find discriminative phrases missing from the default topic keywords. Discovered phrases are saved to `custom_keywords.json` and merged at runtime.
 - **Recall improvements:** systematic evaluation-driven tuning of search and topic scoring, improving average recall from 0.07 to 0.45 on the archABM benchmark while keeping faithfulness at 0.98.
 - **Per-topic role weights:** replaced the global `USER_WEIGHT=2` with per-topic `(user, agent)` weight tuples summing to 3.0. Preferences are strongly user-biased (2.7/0.3), learnings are agent-biased (0.5/2.5), and collaborative topics like problems/ideas/open_issues are balanced (1.5/1.5). Configured in `TOPIC_ROLE_WEIGHTS`.
 - **New `learnings` topic:** replaced `planning` (which scored poorly in evaluation) with `learnings` — captures research findings, documentation synthesis, web search results, and analysis outputs. Agent-biased role weight reflects that these are typically agent-synthesized.
@@ -11,8 +13,9 @@
 - **Topic threshold lowered:** `TOPIC_MIN_HITS_DEFAULT` reduced from 4 to 2, aligning with the per-topic role weight system where a single user keyword in a high-weight topic is meaningful.
 - **Multi-chunk per conversation:** search deduplication now allows up to `MAX_CHUNKS_PER_CONV` (3) chunks per conversation instead of the previous hard limit of 1, improving recall for long conversations with multiple relevant exchanges.
 - **Topic-first overfetch:** when a topic filter is set, the candidate pool is enlarged (50x overfetch, min 500 candidates) so topic-tagged chunks aren't drowned out by semantically similar but differently-tagged content in the standard top-120 window.
-- **Repository hygiene:** hardened `.gitignore` to cover `.env` files, eval fixtures (`tests/eval/fixtures/*.json`), raw transcripts (`*.jsonl`), export archives (`curios-export*.tar.gz`), local ChromaDB files (`chromadb/`, `*.sqlite3`), and generated state (`graphify-out/`, `.deepeval/`, `.cursor/`, `.pytest_cache/`).
+- **Repository hygiene:** hardened `.gitignore` to cover `.env` files, eval fixtures (`tests/eval/fixtures/*.json`), raw transcripts (`*.jsonl`), export archives, local ChromaDB files (`chromadb/`, `*.sqlite3`), and generated state (`graphify-out/`, `.deepeval/`, `.cursor/`, `.pytest_cache/`).
 - **Pre-commit hook removed:** rely on `.gitignore` plus GitHub push protection for secrets; README documents the hygiene approach.
+- **Bug fix:** `curios cursor install` now reads `CURIOS_CURSOR_HOME` (was incorrectly reading `CURSOR_HOME`), consistent with the indexer, server, and documentation.
 
 ## 0.3.0 — 2026-04-16
 

@@ -1,6 +1,14 @@
 # Curios
 
-Cross-project memory for Cursor IDE. Indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
+Every conversation you have with an AI agent inside Cursor contains real value: architectural decisions, debugging breakthroughs, design tradeoffs, preferences the agent learned about you. Most of it evaporates the moment a session closes. Multiply that across a dozen projects over months, and you find yourself re-explaining context that should already be there — or worse, re-discovering solutions you already worked out.
+
+Curios is a lightweight, Cursor-focused memory layer that passively indexes your agent conversation transcripts into a local semantic database and makes them searchable across all your projects. Ask "what did we decide about the auth architecture in project X?" or "have I solved a similar migration problem before?" — and get answers grounded in your own conversations, with zero manual effort.
+
+**Why not just use [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and served as direct inspiration for Curios. But for the Cursor-specific use case it has friction: the agent must explicitly call a save tool (so most sessions go unrecorded), its 29 MCP tools bloat every system prompt with schema overhead, and it's designed for broad personal KB management rather than the narrower problem of making your IDE conversation history passively findable and reusable across projects.
+
+Curios is the focused alternative. It stores everything raw — no summarization, no tagging, no manual organization. Projects and topics are inferred automatically from file paths and conversation content. It runs entirely on your machine with local embeddings, so there's no extra API key or subscription: retrieval happens through the Cursor LLM you're already paying for. A single `~/.local/share/curios/` directory, no Docker, no background services, two read-only MCP tools. The design philosophy in one line: *store everything raw, make it findable, cost nothing extra, require zero user effort.*
+
+Technically: indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes two MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
 
 ## Installation
 
@@ -27,7 +35,12 @@ This creates an isolated virtual environment and places four entry points on you
 curios cursor install
 ```
 
-This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs the `curios-install` skill to `~/.cursor/skills/`. Only the `curios` entries are touched — other MCP servers, hooks, and rules are preserved. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
+This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs two skills to `~/.cursor/skills/`:
+
+- **`curios-install`** — guides the agent through end-to-end setup conversationally.
+- **`curios-keyword-discovery`** — scans real conversation transcripts to discover topic keywords missing from the default set. Run it periodically or after indexing new projects to expand topic coverage; discovered phrases are saved to `custom_keywords.json` (merged at runtime, never edits source defaults).
+
+Only the `curios` entries are touched — other MCP servers, hooks, and rules are preserved. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
 
 **Restart Cursor** after running this.
 
@@ -117,7 +130,7 @@ which curios-server curios-index
 
 The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
 
-**`~/.cursor/rules/curios.mdc`** — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: false` so the AI loads it on demand.
+**`~/.cursor/rules/curios.mdc`** — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: true` so the AI proactively searches conversation memory when context would help (e.g. a session starts with a question that requires prior decisions or history). Set to `alwaysApply: false` if you prefer the rule to load only when explicitly referenced — this reduces token overhead in sessions where memory is not needed, but means the agent won't search Curios unless you mention it.
 
 ## Data directory
 
@@ -127,6 +140,7 @@ Runtime data is stored in `~/.local/share/curios/` (created automatically on fir
 ~/.local/share/curios/
 ├── chromadb/              # Vector database
 ├── preferences.md         # User preferences (optional, hand-edited)
+├── custom_keywords.json   # User-specific topic keywords (optional, managed by keyword-discovery skill)
 ├── schema_version.json    # Schema version tracking
 ├── index.log              # Appended log from session-hook indexer runs
 ├── last_indexed.json      # Completion record from the last run that indexed ≥1 file
@@ -176,7 +190,7 @@ For the MCP server and session hook (which are launched by Cursor, not your shel
 ## Uninstallation
 
 ```bash
-curios cursor uninstall    # remove MCP, hook, rule, and skill from ~/.cursor/
+curios cursor uninstall    # remove MCP, hook, rule, and skills from ~/.cursor/
 uv tool uninstall curios   # remove binaries and isolated venv
 rm -rf ~/.local/share/curios  # remove ChromaDB, preferences, and indexing state
 ```
@@ -185,10 +199,12 @@ Restart Cursor after the first command.
 
 ## MCP Tools
 
-| Tool | Purpose |
-|---|---|
-| `curios_search` | Semantic search across transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered) |
-| `curios_related` | Given a conversation_id, find related content in other conversations/projects |
+Curios exposes two MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); recap was folded into `curios_search` (omit `query`), while `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios-maintain status` and edit `preferences.md` directly instead.
+
+| Tool | Purpose | When to use |
+|---|---|---|
+| `curios_search` | Semantic search across indexed transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered). | User asks about prior decisions, patterns, preferences, history, or "where did we leave off". |
+| `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.
 
@@ -254,7 +270,7 @@ curios-index --file PATH --project-name MyApp   # Force logical project when pat
 ## Maintenance CLI
 
 ```bash
-curios-maintain status                                    # Machine-parseable key=value summary
+curios-maintain status                                    # Compact human-readable health check
 curios-maintain stats                                     # Full human-readable report (see below)
 curios-maintain verify                                    # Metadata + orphaned sources + permissions
 curios-maintain reindex [--project NAME]                  # Wipe DB and rebuild (requires "yes")
@@ -270,7 +286,7 @@ curios-maintain import --input archive.tar.gz --dry-run                # Validat
 
 ### `status` output
 
-A compact human-readable health check — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `stats` for the full breakdown.
+A compact human-readable summary — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `stats` for the full breakdown.
 
 ### `stats` output
 
@@ -284,10 +300,25 @@ A formatted report with sections:
 - **Shallow conversations** — lists conversations with fewer than `SHALLOW_THRESHOLD` (2) user exchanges, up to 20 entries, with a `prune --shallow` reminder
 - **Fully incremental conversations** — lists conversations where every chunk is `novelty=incremental` (content fully subsumed by earlier indexed material)
 
+## Evaluation
+
+An informal RAG evaluation was run against a personal conversation corpus (8,493 chunks / 262 conversations / 25 projects, schema v3) using [DeepEval](https://github.com/confident-ai/deepeval) with an LLM judge. Results across two projects with ground-truth datasets:
+
+| Metric | Range across projects | Notes |
+|---|---|---|
+| Faithfulness | 0.97 – 0.98 | Near-perfect; retrieved chunks are accurate |
+| Answer Relevancy | 0.52 – 0.74 | Improves with corpus size |
+| Contextual Recall | 0.31 – 0.38 | Main gap; scattered content is hard to surface with top-N retrieval |
+| Token reduction | 4–5× | vs. reading raw conversation text |
+
+**Faithfulness is the strongest signal** — Curios does not hallucinate. Recall is the known weak point, particularly for topics like `learnings` where insights are spread thinly across many conversations.
+
+*Formal test scripts are being added. Contributions improving relevancy and recall are very welcome — see `tests/eval/` for ground truth tooling and `RAG_RESULTS.md` for the full run details.*
+
 ## Security
 
 Secrets are redacted before storage (API keys, passwords, tokens — see `config.py`). ChromaDB is read-only from MCP. All results wrapped in `[CURIOS RESULT]` delimiters for prompt-injection hygiene.
 
 ## Disclaimer
 
-This is experimental software provided "AS IS". See [DISCLAIMER.md](DISCLAIMER.md) for full terms.
+This is experimental software provided "AS IS". See [DISCLAIMER.md](DISCLAIMER.md) for full terms. Licensed under the [MIT License](LICENSE). See [CHANGELOG.md](CHANGELOG.md) for version history.

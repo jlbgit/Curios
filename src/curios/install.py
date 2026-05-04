@@ -13,7 +13,7 @@ _BINARY_HINT = "Run 'uv tool install git+https://github.com/jlbgit/Curios' first
 
 
 def _cursor_home() -> Path:
-    env = os.environ.get("CURSOR_HOME")
+    env = os.environ.get("CURIOS_CURSOR_HOME")
     return Path(env) if env else Path.home() / ".cursor"
 
 
@@ -188,14 +188,12 @@ def _cli() -> int:
     cursor_sub.add_parser("check", help="Check whether deployed Cursor files are up to date")
 
     args = ap.parse_args()
-    if args.cmd == "cursor":
-        if args.action == "install":
-            return cmd_cursor_install()
-        if args.action == "uninstall":
-            return cmd_cursor_uninstall()
-        if args.action == "check":
-            return cmd_cursor_check()
-    return 1
+    actions = {
+        "install": cmd_cursor_install,
+        "uninstall": cmd_cursor_uninstall,
+        "check": cmd_cursor_check,
+    }
+    return actions[args.action]()
 
 
 def main() -> None:

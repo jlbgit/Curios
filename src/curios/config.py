@@ -70,8 +70,10 @@ TOPIC_MIN_HITS: dict[str, int] = {
 
 # ── Search ranking ──────────────────────────────────────────
 # Max chunks returned per conversation in a single search.
-# Default 1 maximises conversation diversity; raising to 2 improves recall
-# for long conversations that contain multiple relevant exchanges.
+# Higher values improve recall for long conversations with multiple relevant
+# exchanges; lower values (1-2) maximise conversation diversity.
+# Useful range: 1 (strict diversity) to 5 (recall-focused). Set to 3 as a
+# balance between diversity and recall based on evaluation benchmarks.
 MAX_CHUNKS_PER_CONV = 3
 # Distance multiplier applied to "incremental" chunks during search.
 # Values > 1.0 push redundant content lower in results.

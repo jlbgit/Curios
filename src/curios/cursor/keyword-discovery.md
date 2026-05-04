@@ -103,5 +103,5 @@ If the file already exists, merge new phrases into it (don't overwrite).
 Remind the user: keyword changes require re-indexing affected projects:
 
 ```bash
-uv run curios-index --project <name> --force
+curios-index --project <name> --force
 ```
