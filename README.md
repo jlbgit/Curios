@@ -2,15 +2,31 @@
 
 **v0.4.0**
 
-Every conversation you have with an AI agent inside Cursor contains real value: architectural decisions, debugging breakthroughs, design tradeoffs, preferences the agent learned about you. Most of it evaporates the moment a session closes. Multiply that across a dozen projects over months, and you find yourself re-explaining context that should already be there — or worse, re-discovering solutions you already worked out.
+Your Cursor AI conversations contain your best decisions, learnings, and hard-won (and well-paid...) insights — yet most get lost when the session closes. Multiply that across a dozen projects and you're constantly re-explaining context that should already be there.
 
-Curios is a lightweight, Cursor-focused memory layer that passively indexes your agent conversation transcripts into a local semantic database and makes them searchable across all your projects. Ask "what did we decide about the auth architecture in project X?" or "have I solved a similar migration problem before?" — and get answers grounded in your own conversations, with zero manual effort.
+Curios passively indexes your agent conversation transcripts into a local semantic database and makes them searchable across all your projects:
 
-**Why not just use [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and served as direct inspiration for Curios. But for the Cursor-specific use case it has friction: the agent must explicitly call a save tool (so most sessions go unrecorded), its 29 MCP tools bloat every system prompt with schema overhead, and it's designed for broad personal KB management rather than the narrower problem of making your IDE conversation history passively findable and reusable across projects.
+- *"What did we decide about the auth architecture in project X?"*
+- *"Have I solved a similar migration problem before?"*
+- *"What were the open issues we left last time in project Y?"*
+- *"Let's recap all ideas we have had regarding token saving strategies."*
+- *"What have you learned about my personal preferences across sessions?"*
 
-Curios is the focused alternative. It stores everything raw — no summarization, no tagging, no manual organization. Projects and topics are inferred automatically from file paths and conversation content. It runs entirely on your machine with local embeddings, so there's no extra API key or subscription: retrieval happens through the Cursor LLM you're already paying for. A single `~/.local/share/curios/` directory, no Docker, no background services, two read-only MCP tools. The design philosophy in one line: *store everything raw, make it findable, cost nothing extra, require zero user effort.*
 
-Technically: indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes two MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
+**How it works:**
+
+| | |
+|---|---|
+| **Zero effort** | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization |
+| **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
+| **Fully local** | Single `~/.local/share/curios/` directory — no Docker, no background services, no extra API keys |
+| **Lean surface** | Two read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content |
+
+> *Store everything raw, make it findable, cost nothing extra, require zero user effort.*
+
+**Why not [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and direct inspiration for Curios. For the Cursor use case it has friction: the agent must explicitly call a save tool (most sessions go unrecorded), 29 MCP tools bloat every system prompt, and it targets broad personal KB management rather than making your IDE conversation history passively reusable.
+
+Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes two MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
 
 ## Installation
 
