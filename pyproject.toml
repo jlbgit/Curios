@@ -32,6 +32,12 @@ Homepage = "https://github.com/jlbgit/Curios"
 Repository = "https://github.com/jlbgit/Curios"
 Changelog = "https://github.com/jlbgit/Curios/blob/main/CHANGELOG.md"
 
+[tool.pytest.ini_options]
+# deepeval's pytest plugin buffers all output for its cloud dashboard,
+# producing no visible progress during long eval runs. Disable it globally
+# since we don't use the Confident AI integration.
+addopts = "-p no:deepeval"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
