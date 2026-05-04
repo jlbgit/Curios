@@ -1,5 +1,7 @@
 # Curios
 
+**v0.4.0**
+
 Every conversation you have with an AI agent inside Cursor contains real value: architectural decisions, debugging breakthroughs, design tradeoffs, preferences the agent learned about you. Most of it evaporates the moment a session closes. Multiply that across a dozen projects over months, and you find yourself re-explaining context that should already be there — or worse, re-discovering solutions you already worked out.
 
 Curios is a lightweight, Cursor-focused memory layer that passively indexes your agent conversation transcripts into a local semantic database and makes them searchable across all your projects. Ask "what did we decide about the auth architecture in project X?" or "have I solved a similar migration problem before?" — and get answers grounded in your own conversations, with zero manual effort.
@@ -55,7 +57,7 @@ curios cursor check
 ### Step 3: Initial indexing
 
 ```bash
-curios-index          # first run ~25 min; subsequent runs happen automatically via session hook
+curios-index          # first run ~30 min depending on your machine; subsequent runs happen automatically via session hook
 curios-maintain status
 ```
 
@@ -313,7 +315,7 @@ An informal RAG evaluation was run against a personal conversation corpus (8,493
 
 **Faithfulness is the strongest signal** — Curios does not hallucinate. Recall is the known weak point, particularly for topics like `learnings` where insights are spread thinly across many conversations.
 
-*Formal test scripts are being added. Contributions improving relevancy and recall are very welcome — see `tests/eval/` for ground truth tooling and `RAG_RESULTS.md` for the full run details.*
+*Formal test scripts are being added. Contributions improving relevancy and recall are very welcome!*
 
 ## Security
 
