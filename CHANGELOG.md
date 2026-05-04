@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 — 2026-05-04
+
+- **`curios_recap` reinstated as a dedicated MCP tool:** the v0.4.0 consolidation of recap into `curios_search` (omit `query`) proved unreliable — empty-string queries triggered low-quality vector searches instead of time-ordered recap. `curios_recap` is now a first-class tool again with its own `project` and `n_results` parameters. `curios_search` `query` is now required. Tool count: 3 (`curios_recap`, `curios_search`, `curios_related`).
+- **ChromaDB retry logic:** transient `InternalError` from ChromaDB's HNSW index (race between concurrent reader/writer processes) now retried automatically (2 attempts, 0.5s delay) via `_retry_chroma` in all three MCP tools.
+- **Closure fix in `curios_related`:** lambda inside retry loop now binds loop variable by value (`lambda _pi=pi:`) to avoid incorrect document lookups.
+- **User-local project name overrides:** new `project_overrides.json` file in the data directory (`~/.local/share/curios/`) lets users map Cursor project slugs to desired project names without modifying source code. Follows the same pattern as `custom_keywords.json`. The previous empty `PROJECT_NAME_OVERRIDES` dict in `config.py` is replaced by `get_project_overrides()` which loads from the JSON file at runtime.
+- **Documentation:** README updated with a new "User-local configuration" section documenting both `custom_keywords.json` and `project_overrides.json`, and data directory listing updated to include the new file.
+- **Updated Cursor rule and skill:** `curios.mdc` and deployed `~/.cursor/rules/curios.mdc` updated to reflect the three-tool surface and guide the agent to use `curios_recap` for session-start context.
+
 ## 0.4.0 — 2026-05-04
 
 - **MCP tool consolidation:** reduced from 5 tools to 2 (`curios_search`, `curios_related`). Recap mode is now built into `curios_search` (omit `query`); `curios_status` and `curios_preferences` removed — use `curios-maintain status` and edit `preferences.md` directly instead.

@@ -1,6 +1,6 @@
 # Curios
 
-**v0.4.0**
+**v0.4.1**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -161,13 +161,14 @@ Runtime data is stored in `~/.local/share/curios/` (created automatically on fir
 
 ```
 ~/.local/share/curios/
-├── chromadb/              # Vector database
-├── preferences.md         # User preferences (optional, hand-edited)
-├── custom_keywords.json   # User-specific topic keywords (optional, managed by keyword-discovery skill)
-├── schema_version.json    # Schema version tracking
-├── index.log              # Appended log from session-hook indexer runs
-├── last_indexed.json      # Completion record from the last run that indexed ≥1 file
-└── .index.lock            # Advisory lock for concurrent indexing
+├── chromadb/                # Vector database
+├── preferences.md           # User preferences (optional, hand-edited)
+├── custom_keywords.json     # User-specific topic keywords (optional, see below)
+├── project_overrides.json   # User-specific project name overrides (optional, see below)
+├── schema_version.json      # Schema version tracking
+├── index.log                # Appended log from session-hook indexer runs
+├── last_indexed.json        # Completion record from the last run that indexed ≥1 file
+└── .index.lock              # Advisory lock for concurrent indexing
 ```
 
 ## Environment variables
@@ -214,6 +215,38 @@ For the MCP server and session hook (which are launched by Cursor, not your shel
 }
 ```
 
+## User-local configuration
+
+Two optional JSON files in the data directory let you customize Curios without modifying any source files. Both are loaded at runtime and ignored if missing or malformed.
+
+### `custom_keywords.json`
+
+Extends the built-in topic keyword lists with your own phrases. Managed automatically by the `curios-keyword-discovery` skill, or hand-edited. Format: a JSON object mapping topic names to arrays of keyword strings.
+
+```json
+{
+  "decisions": ["sprint planning", "agreed on"],
+  "architecture": ["event sourcing", "CQRS"]
+}
+```
+
+Custom keywords are merged with the defaults — they add to, never replace, the built-in set.
+
+### `project_overrides.json`
+
+Curios infers project names from Cursor's project directory slugs (the folder names under `~/.cursor/projects/`). The heuristic works well for simple paths, but complex directory structures can produce unexpected names (e.g. `~/Documents/ELKAIRKIN/GITLAB/Entregable-E2-1` might resolve to `E2` instead of `ELKAIRKIN`).
+
+This file lets you map specific slugs to the project name you want. Format: a JSON object mapping Cursor project slugs to desired project names.
+
+```json
+{
+  "home-user-Documents-MyProject-GITLAB-subdir": "MyProject",
+  "home-user-work-client-repo-v2": "ClientRepo"
+}
+```
+
+To find a slug, look at the directory names under `~/.cursor/projects/`, or run `curios-maintain stats` and check which project names appear. If a name looks wrong, find the corresponding slug and add an override.
+
 ## Uninstallation
 
 ```bash
@@ -226,13 +259,14 @@ Restart Cursor after the first command.
 
 ## MCP Tools
 
-Curios exposes two MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); recap was folded into `curios_search` (omit `query`), while `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios-maintain status` and edit `preferences.md` directly instead.
+Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios-maintain status` and edit `preferences.md` directly instead.
 
 
-| Tool             | Purpose                                                                                                                            | When to use                                                                                   |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `curios_search`  | Semantic search across indexed transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered). | User asks about prior decisions, patterns, preferences, history, or "where did we leave off". |
-| `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects.                     | A search result looks relevant and you want cross-project connections.                        |
+| Tool             | Purpose                                                                                            | When to use                                                           |
+| ---------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `curios_recap`   | Most recent conversations for a project, time-ordered. Session-start briefing.                     | "Where did we leave off", session start, recent project context.      |
+| `curios_search`  | Semantic search across indexed transcripts (cross-project).                                        | User asks about prior decisions, patterns, preferences, or history.   |
+| `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
 
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.
@@ -244,7 +278,7 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 
 | Param             | Default | Effect                                                                                              |
 | ----------------- | ------- | --------------------------------------------------------------------------------------------------- |
-| `query`           | `null`  | Natural-language semantic query. Omit for recap mode (most recent conversations, time-ordered)      |
+| `query`           | *(required)* | Natural-language semantic query                                                                |
 | `project`         | `null`  | Limit to one project (e.g. `"NEOTEC"`). Omit for cross-project.                                     |
 | `topic`           | `null`  | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
 | `strict`          | `false` | If true, hard-exclude `incremental` chunks (only truly novel content)                               |
