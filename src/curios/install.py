@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,7 +13,7 @@ _BINARY_HINT = "Run 'uv tool install git+https://github.com/jlbgit/Curios' first
 
 
 def _cursor_home() -> Path:
-    env = os.environ.get("CURSOR_HOME")
+    env = os.environ.get("CURIOS_CURSOR_HOME")
     return Path(env) if env else Path.home() / ".cursor"
 
 
@@ -44,6 +45,54 @@ def _package_text(name: str) -> str:
     return (files("curios") / "cursor" / name).read_text(encoding="utf-8")
 
 
+# Maps package resource name → relative path under ~/.cursor/
+_CURSOR_DEPLOYMENTS: list[tuple[str, str]] = [
+    ("curios.mdc",           "rules/curios.mdc"),
+    ("skill.md",             "skills/curios-install/SKILL.md"),
+    ("keyword-discovery.md", "skills/curios-keyword-discovery/SKILL.md"),
+]
+
+
+def _file_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def staleness_report(cursor_home: Path | None = None) -> list[tuple[str, Path, bool]]:
+    """Return (pkg_name, deployed_path, is_stale) for each managed Cursor file.
+
+    A file is stale when the deployed copy doesn't exist or its content differs
+    from the package source.  Callers can use this to warn users or automate
+    re-deployment.
+    """
+    home = cursor_home or _cursor_home()
+    results: list[tuple[str, Path, bool]] = []
+    for pkg_name, rel_path in _CURSOR_DEPLOYMENTS:
+        deployed = home / rel_path
+        try:
+            pkg_text = _package_text(pkg_name)
+        except Exception:
+            continue
+        if not deployed.exists():
+            results.append((pkg_name, deployed, True))
+        else:
+            stale = _file_hash(pkg_text) != _file_hash(deployed.read_text(encoding="utf-8"))
+            results.append((pkg_name, deployed, stale))
+    return results
+
+
+def cmd_cursor_check() -> int:
+    report = staleness_report()
+    any_stale = any(stale for _, _, stale in report)
+    for pkg_name, path, stale in report:
+        tag = "STALE" if stale else "OK   "
+        print(f"  {tag}  {path}")
+    if any_stale:
+        print("\nRun 'curios cursor install' to sync stale files.")
+        return 1
+    print("\nAll Cursor files are up to date.")
+    return 0
+
+
 def cmd_cursor_install() -> int:
     cursor_home = _cursor_home()
     server_bin = _resolve_binary("curios-server")
@@ -73,10 +122,14 @@ def cmd_cursor_install() -> int:
     (rules_dir / "curios.mdc").write_text(_package_text("curios.mdc"), encoding="utf-8")
     print(f"Rule:  {rules_dir / 'curios.mdc'}")
 
-    skill_dir = cursor_home / "skills" / "curios-install"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(_package_text("skill.md"), encoding="utf-8")
-    print(f"Skill: {skill_dir / 'SKILL.md'}")
+    for skill_file, skill_name in [
+        ("skill.md", "curios-install"),
+        ("keyword-discovery.md", "curios-keyword-discovery"),
+    ]:
+        skill_dir = cursor_home / "skills" / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(_package_text(skill_file), encoding="utf-8")
+        print(f"Skill: {skill_dir / 'SKILL.md'}")
 
     print("\nDone. Restart Cursor for changes to take effect.")
     return 0
@@ -112,12 +165,13 @@ def cmd_cursor_uninstall() -> int:
     else:
         print(f"Rule:  {mdc} not found (skipped)")
 
-    skill_dir = cursor_home / "skills" / "curios-install"
-    if skill_dir.exists():
-        shutil.rmtree(skill_dir)
-        print(f"Skill: removed {skill_dir}")
-    else:
-        print(f"Skill: {skill_dir} not found (skipped)")
+    for skill_name in ["curios-install", "curios-keyword-discovery"]:
+        skill_dir = cursor_home / "skills" / skill_name
+        if skill_dir.exists():
+            shutil.rmtree(skill_dir)
+            print(f"Skill: removed {skill_dir}")
+        else:
+            print(f"Skill: {skill_dir} not found (skipped)")
 
     print("\nDone. Restart Cursor for changes to take effect.")
     return 0
@@ -129,16 +183,17 @@ def _cli() -> int:
 
     cursor_p = sub.add_parser("cursor", help="Cursor IDE integration")
     cursor_sub = cursor_p.add_subparsers(dest="action", required=True)
-    cursor_sub.add_parser("install", help="Install MCP server, session hook, AI rule, and install skill")
+    cursor_sub.add_parser("install", help="Install MCP server, session hook, AI rule, and skills")
     cursor_sub.add_parser("uninstall", help="Remove all Cursor integration")
+    cursor_sub.add_parser("check", help="Check whether deployed Cursor files are up to date")
 
     args = ap.parse_args()
-    if args.cmd == "cursor":
-        if args.action == "install":
-            return cmd_cursor_install()
-        if args.action == "uninstall":
-            return cmd_cursor_uninstall()
-    return 1
+    actions = {
+        "install": cmd_cursor_install,
+        "uninstall": cmd_cursor_uninstall,
+        "check": cmd_cursor_check,
+    }
+    return actions[args.action]()
 
 
 def main() -> None:

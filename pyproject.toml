@@ -1,11 +1,24 @@
 [project]
 name = "curios"
-version = "0.3.0"
+version = "0.4.0"
 description = "Cross-project transcript memory for Cursor IDE"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "jlbgit"}]
+keywords = ["cursor", "mcp", "memory", "rag", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 requires-python = ">=3.11"
 dependencies = [
     "chromadb>=1.0",
     "mcp>=1.0",
+    "pydantic>=2.0",
     "pyyaml>=6.0",
 ]
 
@@ -14,6 +27,17 @@ curios = "curios.install:main"
 curios-server = "curios.server:main"
 curios-index = "curios.indexer:main"
 curios-maintain = "curios.maintain:main"
+
+[project.urls]
+Homepage = "https://github.com/jlbgit/Curios"
+Repository = "https://github.com/jlbgit/Curios"
+Changelog = "https://github.com/jlbgit/Curios/blob/main/CHANGELOG.md"
+
+[tool.pytest.ini_options]
+# deepeval's pytest plugin buffers all output for its cloud dashboard,
+# producing no visible progress during long eval runs. Disable it globally
+# since we don't use the Confident AI integration.
+addopts = "-p no:deepeval"
 
 [build-system]
 requires = ["setuptools>=68"]

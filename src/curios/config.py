@@ -1,5 +1,6 @@
 import base64
 import binascii
+import json
 import os
 import re
 from pathlib import Path
@@ -10,6 +11,7 @@ CURIOS_DATA = Path(os.environ.get("CURIOS_DATA", Path.home() / ".local" / "share
 CHROMADB_PATH = CURIOS_DATA / "chromadb"
 TRANSCRIPTS_BASE = CURSOR_HOME / "projects"
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md"
+CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"
 LOCK_PATH = CURIOS_DATA / ".index.lock"
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"
@@ -44,21 +46,35 @@ NOVELTY_N_RESULTS = 8
 
 # ── Topic scoring ───────────────────────────────────────────
 # Each chunk's user+assistant text is scanned for keyword hits.
-# User text hits are multiplied by USER_WEIGHT (higher → user phrasing
-# matters more than assistant boilerplate for topic assignment).
-USER_WEIGHT = 2
-# Minimum total weighted hits required to assign a topic to a chunk.
-# Topics with many keywords (architecture: 17, decisions: 20) naturally
-# accumulate more hits, so a higher default avoids over-tagging.
-TOPIC_MIN_HITS_DEFAULT = 4
-# Per-topic overrides for high-signal topics with fewer keywords.
+# Per-topic role weights (user, agent) sum to 3.0 so topics stay comparable.
+# Asymmetry reflects which voice typically originates each topic — e.g.
+# "preferences" is almost always user-voiced, "learnings" almost always
+# agent-synthesized from research/tool output.
+TOPIC_ROLE_WEIGHTS: dict[str, tuple[float, float]] = {
+    "preferences":  (2.7, 0.3),
+    "learnings":    (0.5, 2.5),
+    "architecture": (1.0, 2.0),
+    "decisions":    (2.0, 1.0),
+    "problems":     (1.5, 1.5),
+    "ideas":        (1.5, 1.5),
+    "open_issues":  (1.5, 1.5),
+}
+_DEFAULT_ROLE_WEIGHTS: tuple[float, float] = (2.0, 1.0)
+TOPIC_MIN_HITS_DEFAULT = 2
 TOPIC_MIN_HITS: dict[str, int] = {
     "preferences": 2,
     "open_issues": 2,
     "ideas": 2,
+    "learnings": 2,
 }
 
 # ── Search ranking ──────────────────────────────────────────
+# Max chunks returned per conversation in a single search.
+# Higher values improve recall for long conversations with multiple relevant
+# exchanges; lower values (1-2) maximise conversation diversity.
+# Useful range: 1 (strict diversity) to 5 (recall-focused). Set to 3 as a
+# balance between diversity and recall based on evaluation benchmarks.
+MAX_CHUNKS_PER_CONV = 3
 # Distance multiplier applied to "incremental" chunks during search.
 # Values > 1.0 push redundant content lower in results.
 INCREMENTAL_PENALTY = 1.15
@@ -68,6 +84,11 @@ DECISION_BOOST = 0.82
 # Over-fetch multiplier: raw results fetched = n_results * this factor.
 # Higher → better reranking quality but slower queries.
 SEARCH_OVERFETCH_FACTOR = 8
+# When a topic filter is set, topic-tagged chunks must survive a post-filter
+# step. Since Chroma cannot filter by topic substring natively, we enlarge the
+# candidate pool so all topic-tagged chunks in scope are considered.
+TOPIC_FILTER_OVERFETCH = 50
+TOPIC_FILTER_FETCH_MIN = 500
 # Max characters returned per result in search and recap responses.
 SEARCH_MAX_TEXT = 8_000
 RECAP_PREVIEW_MAX = 600
@@ -128,27 +149,43 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "estructura",
         "flujo",
     ),
-    "planning": (
-        "plan",
-        "roadmap",
-        "milestone",
-        "sprint",
-        "scope",
-        "requirement",
-        "requisito",
-        "deadline",
-        "timeline",
-        "backlog",
-        "epic",
-        "deliverable",
-        "entregable",
-        "capítulo",
-        "sección",
+    "learnings": (
+        "according to",
+        "the paper",
+        "the documentation",
+        "documentation says",
+        "research shows",
+        "research suggests",
+        "the study",
+        "benchmark",
+        "i found that",
+        "i learned",
+        "turns out",
+        "it appears that",
+        "key finding",
+        "the takeaway",
+        "in summary",
+        "to summarize",
+        "based on my analysis",
+        "the data shows",
+        "results show",
+        "web search",
+        "search results",
+        "the results indicate",
+        "measured",
+        "observed that",
+        "confirmed that",
         # Spanish
-        "hoja de ruta",
-        "plazo",
-        "alcance",
-        "objetivo",
+        "según",
+        "la investigación",
+        "resulta que",
+        "el análisis muestra",
+        "los datos muestran",
+        "en resumen",
+        "encontré que",
+        "aprendí que",
+        "el resultado",
+        "se confirma",
     ),
     "problems": (
         "bug",
@@ -178,8 +215,10 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "preferences": (
         "i prefer",
         "i'd rather",
+        "i'd like",
         "i like to",
-        "i want",
+        "i want to",
+        "i feel",
         "i always",
         "i never",
         "always use",
@@ -192,15 +231,23 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "my convention",
         "my style",
         "my rule",
+        "my preference",
         "our team uses",
+        "our convention",
+        "please don't",
+        "please avoid",
+        "i don't like",
+        "i don't want",
         # Spanish
         "prefiero",
+        "me gustaría",
         "por favor no",
-        "me gusta",
+        "por favor evita",
         "siempre uso",
         "nunca uses",
-        "quiero que",
         "mi convención",
+        "mi preferencia",
+        "no me gusta",
         "nuestro equipo",
     ),
     "ideas": (
@@ -208,9 +255,12 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "what about",
         "maybe we could",
         "we could",
+        "how about",
         "nice to have",
         "nice-to-have",
         "worth exploring",
+        "worth trying",
+        "worth considering",
         "future",
         "prototype",
         "experiment",
@@ -218,23 +268,65 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "spike",
         "explore",
         "might be worth",
+        "could try",
+        "idea:",
+        "one idea",
+        "another idea",
+        "alternative approach",
+        "an option",
+        "possible approach",
+        "stretch goal",
+        "down the road",
+        "longer term",
+        "eventually",
         # Spanish
         "qué tal si",
         "podríamos",
         "estaría bien",
         "a futuro",
         "y si",
+        "otra idea",
+        "una opción",
+        "posible enfoque",
+        "a largo plazo",
     ),
     "open_issues": (
         "todo",
         "fixme",
+        "hack",
         "still need to",
         "haven't yet",
+        "hasn't been",
         "pending",
         "not yet implemented",
+        "not yet done",
         "follow-up",
+        "follow up",
         "open question",
         "blocked",
+        "needs work",
+        "needs fixing",
+        "needs attention",
+        "needs tightening",
+        "not addressed",
+        "unresolved",
+        "left to do",
+        "remaining work",
+        "should revisit",
+        "revisit",
+        "come back to",
+        "circle back",
+        "defer",
+        "deferred",
+        "postpone",
+        "known issue",
+        "known limitation",
+        "missing",
+        "incomplete",
+        "inconsistenc",
+        "workaround in place",
+        "temporary fix",
+        "temp fix",
         # Spanish
         "falta",
         "hace falta",
@@ -243,9 +335,34 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "pregunta abierta",
         "bloqueado",
         "sin implementar",
+        "sin resolver",
+        "pendiente",
+        "hay que volver",
+        "problema conocido",
+        "incompleto",
     ),
     "general": (),
 }
+
+
+def get_topic_keywords() -> dict[str, tuple[str, ...]]:
+    """Merge default TOPIC_KEYWORDS with user-specific custom_keywords.json."""
+    if not CUSTOM_KEYWORDS_PATH.exists():
+        return TOPIC_KEYWORDS
+    try:
+        custom: dict[str, list[str]] = json.loads(
+            CUSTOM_KEYWORDS_PATH.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError):
+        return TOPIC_KEYWORDS
+    merged: dict[str, tuple[str, ...]] = {}
+    for topic, defaults in TOPIC_KEYWORDS.items():
+        extras = custom.get(topic, [])
+        existing = set(k.lower() for k in defaults)
+        new = tuple(k for k in extras if k.lower() not in existing)
+        merged[topic] = defaults + new
+    return merged
+
 
 PROJECT_NAME_OVERRIDES: dict[str, str] = {}
 

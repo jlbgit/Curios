@@ -705,8 +705,7 @@ def _cli() -> int:
         return cmd_export_transcripts(args.output, args.project)
     if args.cmd == "import":
         return cmd_import_transcripts(args.input, args.project, args.dry_run, args.force)
-    print("unknown command", file=sys.stderr)
-    return 1
+    return 1  # argparse required=True makes this unreachable; kept for type safety
 
 
 def main() -> None:
