@@ -2,6 +2,8 @@
 
 **v0.4.0**
 
+> Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
+
 Your Cursor AI conversations contain your best decisions, learnings, and hard-won (and well-paid...) insights — yet most get lost when the session closes. Multiply that across a dozen projects and you're constantly re-explaining context that should already be there.
 
 Curios passively indexes your agent conversation transcripts into a local semantic database and makes them searchable across all your projects:
@@ -12,15 +14,16 @@ Curios passively indexes your agent conversation transcripts into a local semant
 - *"Let's recap all ideas we have had regarding token saving strategies."*
 - *"What have you learned about my personal preferences across sessions?"*
 
-
 **How it works:**
 
-| | |
-|---|---|
-| **Zero effort** | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization |
+
+|                     |                                                                                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Zero effort**     | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization                                                                                                                                                        |
 | **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
-| **Fully local** | Single `~/.local/share/curios/` directory — no Docker, no background services, no extra API keys |
-| **Lean surface** | Two read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content |
+| **Fully local**     | Single `~/.local/share/curios/` directory — no Docker, no background services, no extra API keys                                                                                                                                                                   |
+| **Lean surface**    | Two read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                       |
+
 
 > *Store everything raw, make it findable, cost nothing extra, require zero user effort.*
 
@@ -40,12 +43,14 @@ uv tool install git+https://github.com/jlbgit/Curios
 
 This creates an isolated virtual environment and places four entry points on your PATH at `~/.local/bin/`:
 
-| Command | Purpose |
-|---|---|
-| `curios` | Manage Cursor integration (`install`, `uninstall`, `check`) |
-| `curios-server` | MCP server (started by Cursor) |
-| `curios-index` | Transcript indexer + session hook |
+
+| Command           | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `curios`          | Manage Cursor integration (`install`, `uninstall`, `check`)     |
+| `curios-server`   | MCP server (started by Cursor)                                  |
+| `curios-index`    | Transcript indexer + session hook                               |
 | `curios-maintain` | Maintenance CLI (status, stats, verify, reindex, prune, export) |
+
 
 ### Step 2: Configure Cursor
 
@@ -55,8 +60,8 @@ curios cursor install
 
 This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs two skills to `~/.cursor/skills/`:
 
-- **`curios-install`** — guides the agent through end-to-end setup conversationally.
-- **`curios-keyword-discovery`** — scans real conversation transcripts to discover topic keywords missing from the default set. Run it periodically or after indexing new projects to expand topic coverage; discovered phrases are saved to `custom_keywords.json` (merged at runtime, never edits source defaults).
+- `**curios-install**` — guides the agent through end-to-end setup conversationally.
+- `**curios-keyword-discovery**` — scans real conversation transcripts to discover topic keywords missing from the default set. Run it periodically or after indexing new projects to expand topic coverage; discovered phrases are saved to `custom_keywords.json` (merged at runtime, never edits source defaults).
 
 Only the `curios` entries are touched — other MCP servers, hooks, and rules are preserved. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
 
@@ -118,7 +123,7 @@ If you need to configure Cursor by hand, Curios requires full absolute paths to 
 which curios-server curios-index
 ```
 
-**`~/.cursor/mcp.json`** — add a `curios` entry to `mcpServers`:
+`**~/.cursor/mcp.json**` — add a `curios` entry to `mcpServers`:
 
 ```json
 {
@@ -130,7 +135,7 @@ which curios-server curios-index
 }
 ```
 
-**`~/.cursor/hooks.json`** — append to the `sessionEnd` array:
+`**~/.cursor/hooks.json**` — append to the `sessionEnd` array:
 
 ```json
 {
@@ -148,7 +153,7 @@ which curios-server curios-index
 
 The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
 
-**`~/.cursor/rules/curios.mdc`** — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: true` so the AI proactively searches conversation memory when context would help (e.g. a session starts with a question that requires prior decisions or history). Set to `alwaysApply: false` if you prefer the rule to load only when explicitly referenced — this reduces token overhead in sessions where memory is not needed, but means the agent won't search Curios unless you mention it.
+`**~/.cursor/rules/curios.mdc**` — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: true` so the AI proactively searches conversation memory when context would help (e.g. a session starts with a question that requires prior decisions or history). Set to `alwaysApply: false` if you prefer the rule to load only when explicitly referenced — this reduces token overhead in sessions where memory is not needed, but means the agent won't search Curios unless you mention it.
 
 ## Data directory
 
@@ -169,19 +174,23 @@ Runtime data is stored in `~/.local/share/curios/` (created automatically on fir
 
 All paths are defined in `src/curios/config.py` with sensible defaults. You can override them with environment variables for non-standard setups:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `CURIOS_DATA` | `~/.local/share/curios/` | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
-| `CURIOS_CURSOR_HOME` | `~/.cursor/` | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`. |
+
+| Variable             | Default                  | Purpose                                                                                |
+| -------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
+| `CURIOS_DATA`        | `~/.local/share/curios/` | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
+| `CURIOS_CURSOR_HOME` | `~/.cursor/`             | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
+
 
 Derived paths (not independently configurable — they follow `CURIOS_DATA`):
 
-| Path | Derived from | Content |
-|---|---|---|
-| `$CURIOS_DATA/chromadb/` | `CURIOS_DATA` | ChromaDB vector database |
-| `$CURIOS_DATA/preferences.md` | `CURIOS_DATA` | User preferences file |
-| `$CURIOS_DATA/schema_version.json` | `CURIOS_DATA` | Schema migration state |
-| `$CURIOS_DATA/.index.lock` | `CURIOS_DATA` | Advisory lock for concurrent indexing |
+
+| Path                               | Derived from  | Content                               |
+| ---------------------------------- | ------------- | ------------------------------------- |
+| `$CURIOS_DATA/chromadb/`           | `CURIOS_DATA` | ChromaDB vector database              |
+| `$CURIOS_DATA/preferences.md`      | `CURIOS_DATA` | User preferences file                 |
+| `$CURIOS_DATA/schema_version.json` | `CURIOS_DATA` | Schema migration state                |
+| `$CURIOS_DATA/.index.lock`         | `CURIOS_DATA` | Advisory lock for concurrent indexing |
+
 
 To use a custom data location, export the variable before running any curios command:
 
@@ -219,10 +228,12 @@ Restart Cursor after the first command.
 
 Curios exposes two MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); recap was folded into `curios_search` (omit `query`), while `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios-maintain status` and edit `preferences.md` directly instead.
 
-| Tool | Purpose | When to use |
-|---|---|---|
-| `curios_search` | Semantic search across indexed transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered). | User asks about prior decisions, patterns, preferences, history, or "where did we leave off". |
-| `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
+
+| Tool             | Purpose                                                                                                                            | When to use                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `curios_search`  | Semantic search across indexed transcripts (cross-project). Omit `query` for recap mode (most recent conversations, time-ordered). | User asks about prior decisions, patterns, preferences, history, or "where did we leave off". |
+| `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects.                     | A search result looks relevant and you want cross-project connections.                        |
+
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.
 
@@ -230,16 +241,19 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 
 **Parameters:**
 
-| Param | Default | Effect |
-|---|---|---|
-| `query` | `null` | Natural-language semantic query. Omit for recap mode (most recent conversations, time-ordered) |
-| `project` | `null` | Limit to one project (e.g. `"NEOTEC"`). Omit for cross-project. |
-| `topic` | `null` | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
-| `strict` | `false` | If true, hard-exclude `incremental` chunks (only truly novel content) |
-| `include_shallow` | `false` | If true, include conversations with < 2 user messages |
-| `n_results` | `5` | Max results returned |
+
+| Param             | Default | Effect                                                                                              |
+| ----------------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `query`           | `null`  | Natural-language semantic query. Omit for recap mode (most recent conversations, time-ordered)      |
+| `project`         | `null`  | Limit to one project (e.g. `"NEOTEC"`). Omit for cross-project.                                     |
+| `topic`           | `null`  | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
+| `strict`          | `false` | If true, hard-exclude `incremental` chunks (only truly novel content)                               |
+| `include_shallow` | `false` | If true, include conversations with < 2 user messages                                               |
+| `n_results`       | `5`     | Max results returned                                                                                |
+
 
 **Default behavior** (`strict=false`, `include_shallow=false`):
+
 - Excludes shallow conversations (< 2 user messages)
 - Includes all novelty levels, but demotes incremental chunks in ranking (x1.15 distance penalty)
 - Limits to `MAX_CHUNKS_PER_CONV` (3) chunks per conversation for diversity, while allowing multiple relevant exchanges from the same conversation
@@ -256,19 +270,22 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 
 Topics are scored per exchange (user+assistant pair) using **per-topic role weights** that reflect which voice typically originates each topic. Weights are (user, agent) tuples summing to 3.0:
 
-| Topic | User weight | Agent weight | Rationale |
-|---|---|---|---|
-| `preferences` | 2.7 | 0.3 | Almost always user-voiced ("I prefer…") |
-| `learnings` | 0.5 | 2.5 | Agent-synthesized from research/tools/PDFs |
-| `architecture` | 1.0 | 2.0 | Agent typically explains structure |
-| `decisions` | 2.0 | 1.0 | User approves, agent proposes |
-| `problems` | 1.5 | 1.5 | Both report and identify |
-| `ideas` | 1.5 | 1.5 | Collaborative |
-| `open_issues` | 1.5 | 1.5 | Collaborative |
+
+| Topic          | User weight | Agent weight | Rationale                                  |
+| -------------- | ----------- | ------------ | ------------------------------------------ |
+| `preferences`  | 2.7         | 0.3          | Almost always user-voiced ("I prefer…")    |
+| `learnings`    | 0.5         | 2.5          | Agent-synthesized from research/tools/PDFs |
+| `architecture` | 1.0         | 2.0          | Agent typically explains structure         |
+| `decisions`    | 2.0         | 1.0          | User approves, agent proposes              |
+| `problems`     | 1.5         | 1.5          | Both report and identify                   |
+| `ideas`        | 1.5         | 1.5          | Collaborative                              |
+| `open_issues`  | 1.5         | 1.5          | Collaborative                              |
+
 
 Default threshold is 2 for all topics (overridden per-topic in `TOPIC_MIN_HITS`).
 
 **Two-tier tagging:**
+
 1. **Confident** — any topic with weighted score ≥ threshold is included (multi-tagging).
 2. **Fallback** — if no topic clears the threshold but the best-scoring topic has any signal (> 0), that single topic is assigned. Only truly zero-signal chunks fall back to `general`.
 
@@ -322,12 +339,14 @@ A formatted report with sections:
 
 An informal RAG evaluation was run against a personal conversation corpus (8,493 chunks / 262 conversations / 25 projects, schema v3) using [DeepEval](https://github.com/confident-ai/deepeval) with an LLM judge. Results across two projects with ground-truth datasets:
 
-| Metric | Range across projects | Notes |
-|---|---|---|
-| Faithfulness | 0.97 – 0.98 | Near-perfect; retrieved chunks are accurate |
-| Answer Relevancy | 0.52 – 0.74 | Improves with corpus size |
-| Contextual Recall | 0.31 – 0.38 | Main gap; scattered content is hard to surface with top-N retrieval |
-| Token reduction | 4–5× | vs. reading raw conversation text |
+
+| Metric            | Range across projects | Notes                                                               |
+| ----------------- | --------------------- | ------------------------------------------------------------------- |
+| Faithfulness      | 0.97 – 0.98           | Near-perfect; retrieved chunks are accurate                         |
+| Answer Relevancy  | 0.52 – 0.74           | Improves with corpus size                                           |
+| Contextual Recall | 0.31 – 0.38           | Main gap; scattered content is hard to surface with top-N retrieval |
+| Token reduction   | 4–5×                  | vs. reading raw conversation text                                   |
+
 
 **Faithfulness is the strongest signal** — Curios does not hallucinate. Recall is the known weak point, particularly for topics like `learnings` where insights are spread thinly across many conversations.
 
