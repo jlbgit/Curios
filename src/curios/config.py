@@ -12,6 +12,7 @@ CHROMADB_PATH = CURIOS_DATA / "chromadb"
 TRANSCRIPTS_BASE = CURSOR_HOME / "projects"
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md"
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"
+PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json"
 LOCK_PATH = CURIOS_DATA / ".index.lock"
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"
@@ -364,7 +365,18 @@ def get_topic_keywords() -> dict[str, tuple[str, ...]]:
     return merged
 
 
-PROJECT_NAME_OVERRIDES: dict[str, str] = {}
+def get_project_overrides() -> dict[str, str]:
+    """Load user-local slug→project-name overrides from project_overrides.json."""
+    if not PROJECT_OVERRIDES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(PROJECT_OVERRIDES_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
 
 CURIOS_IMPORT_SLUG_PREFIX = "curios-import-"
 
@@ -423,8 +435,9 @@ def extract_project_name(transcript_path: Path) -> str:
     except (ValueError, IndexError):
         return "unknown"
 
-    if slug in PROJECT_NAME_OVERRIDES:
-        return PROJECT_NAME_OVERRIDES[slug]
+    overrides = get_project_overrides()
+    if slug in overrides:
+        return overrides[slug]
 
     imported = project_name_from_import_slug(slug)
     if imported is not None:
