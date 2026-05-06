@@ -10,24 +10,33 @@ import chromadb
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from curios import bm25
 from curios.config import (
     ALL_TOPICS,
+    BM25_FETCH_N,
     CHROMA_RETRY_ATTEMPTS,
     CHROMA_RETRY_DELAY,
     CHROMADB_PATH,
     COLLECTION_NAME,
     DECISION_BOOST,
     FIELD_QUERY_TEMPLATES,
+    HYBRID_SEARCH_ENABLED,
     MAX_CHUNKS_PER_CONV,
     MULTI_QUERY_ENABLED,
     MULTI_QUERY_KW_COUNT,
     MULTI_QUERY_MAX_VARIANTS,
+    RECAP_DEFAULT_N_RESULTS,
     RECAP_FETCH_LIMIT,
     RECAP_PREVIEW_MAX,
+    RELATED_DEFAULT_N_RESULTS,
     RELATED_FETCH_MAX,
     RELATED_OVERFETCH_FACTOR,
     RELATED_PROBE_CHUNKS,
+    RELATED_PROBE_WEIGHT_DEPTH,
+    RELATED_PROBE_WEIGHT_FIRST,
+    RELATED_PROBE_WEIGHT_NOVEL,
     RELATED_SOURCE_LIMIT,
+    RRF_K,
     SEARCH_CANDIDATES_FACTOR,
     SEARCH_DEFAULT_N_RESULTS,
     SEARCH_FETCH_MAX,
@@ -47,6 +56,7 @@ def _wrap(body: str) -> str:
 
 
 _client_instance: chromadb.PersistentClient | None = None
+_bm25_bootstrapped = False
 
 
 def _get_client() -> chromadb.PersistentClient:
@@ -132,10 +142,68 @@ def _rank_distance(
     return d
 
 
+def _rrf_fuse(
+    dense_ids: list[str],
+    sparse_ids: list[str],
+    k: int = RRF_K,
+) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for rank, doc_id in enumerate(dense_ids):
+        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    for rank, doc_id in enumerate(sparse_ids):
+        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return scores
+
+
+def _meta_matches_search_filters(
+    meta: dict[str, Any],
+    *,
+    include_shallow: bool,
+    strict: bool,
+    project: str | None,
+    topic: str | None,
+) -> bool:
+    if not include_shallow and meta.get("depth") == "shallow":
+        return False
+    if strict and meta.get("novelty") == "incremental":
+        return False
+    if project and meta.get("project") != project:
+        return False
+    if topic and topic in ALL_TOPICS and not meta.get(f"topic_{topic}"):
+        return False
+    return True
+
+
+def _ensure_bm25(coll) -> None:
+    global _bm25_bootstrapped
+    if _bm25_bootstrapped:
+        return
+    _bm25_bootstrapped = True
+    if bm25.count() > 0:
+        return
+    total = coll.count()
+    if total == 0:
+        return
+    got = _retry_chroma(
+        lambda: coll.get(include=["documents", "metadatas"], limit=total)
+    )
+    ids = got.get("ids") or []
+    docs = got.get("documents") or []
+    metas = got.get("metadatas") or []
+    rows: list[tuple[str, str, str]] = []
+    for cid, doc, meta in zip(ids, docs, metas):
+        if not meta:
+            continue
+        proj = str(meta.get("project") or "unknown")
+        rows.append((str(cid), doc or "", proj))
+    if rows:
+        bm25.insert_batch(rows)
+
+
 @mcp.tool()
 def curios_recap(
     project: Annotated[str | None, Field(description="Project name to recap (e.g. 'NEOTEC'). Omit for all projects.")] = None,
-    n_results: Annotated[int, Field(description="Max recent conversations to return (default 5)")] = 5,
+    n_results: Annotated[int, Field(description=f"Max recent conversations to return (default {RECAP_DEFAULT_N_RESULTS})")] = RECAP_DEFAULT_N_RESULTS,
 ) -> str:
     """Session recap: most recent conversations for a project, time-ordered. Call at session start to see where you left off."""
     coll = _collection()
@@ -257,9 +325,50 @@ def curios_search(
             if prev is None or dist_f < prev[0]:
                 merged[key] = (dist_f, doc or "", meta)
 
+    dense_ordered_keys = [
+        k for k, _ in sorted(merged.items(), key=lambda x: x[1][0])
+    ]
+
+    rrf_scores: dict[str, float] | None = None
+    if HYBRID_SEARCH_ENABLED:
+        _ensure_bm25(coll)
+        sparse_ids = bm25.search(query, project, BM25_FETCH_N)
+        bm25_only = [cid for cid in sparse_ids if cid not in merged]
+        if bm25_only:
+            got_sparse = _retry_chroma(
+                lambda ids=bm25_only: coll.get(
+                    ids=ids,
+                    include=["documents", "metadatas"],
+                )
+            )
+            s_ids = got_sparse.get("ids") or []
+            s_docs = got_sparse.get("documents") or []
+            s_metas = got_sparse.get("metadatas") or []
+            if len(s_ids) < len(s_docs):
+                s_ids = list(s_ids) + [""] * (len(s_docs) - len(s_ids))
+            for doc_id, doc, meta in zip(s_ids, s_docs, s_metas):
+                if not meta:
+                    continue
+                if not _meta_matches_search_filters(
+                    meta,
+                    include_shallow=include_shallow,
+                    strict=strict,
+                    project=project,
+                    topic=topic,
+                ):
+                    continue
+                key = _chunk_row_key(str(doc_id), meta)
+                merged[key] = (1e9, doc or "", meta)
+        rrf_scores = _rrf_fuse(dense_ordered_keys, sparse_ids)
+
     rows: list[tuple[float, str, dict[str, Any]]] = []
-    for raw_dist, doc, meta in merged.values():
-        adj = _rank_distance(raw_dist, meta, boost)
+    for key, (raw_dist, doc, meta) in merged.items():
+        if HYBRID_SEARCH_ENABLED and rrf_scores is not None:
+            rrf = rrf_scores.get(key, 0.0)
+            pseudo = 1.0 / (rrf + 1e-9)
+            adj = _rank_distance(pseudo, meta, boost)
+        else:
+            adj = _rank_distance(raw_dist, meta, boost)
         rows.append((adj, doc, meta))
 
     rows.sort(key=lambda x: x[0])
@@ -304,7 +413,7 @@ def curios_search(
 @mcp.tool()
 def curios_related(
     conversation_id: Annotated[str, Field(description="Conversation ID from a previous search result")],
-    n_results: Annotated[int, Field(description="Max related conversations to return (default 5)")] = 5,
+    n_results: Annotated[int, Field(description=f"Max related conversations to return (default {RELATED_DEFAULT_N_RESULTS})")] = RELATED_DEFAULT_N_RESULTS,
 ) -> str:
     """Find related content across other conversations/projects (cross-references). Like MemPalace tunnels: same topic, different context."""
     coll = _collection()
@@ -333,11 +442,11 @@ def curios_related(
         novelty = str(m.get("novelty") or "")
         score = 0.0
         if depth != "shallow":
-            score += 1.0
+            score += RELATED_PROBE_WEIGHT_DEPTH
         if novelty == "novel":
-            score += 0.5
+            score += RELATED_PROBE_WEIGHT_NOVEL
         if ci == 0:
-            score += 0.3
+            score += RELATED_PROBE_WEIGHT_FIRST
         scored.append((score, i))
     scored.sort(key=lambda x: -x[0])
     probe_indices = [idx for _, idx in scored[:RELATED_PROBE_CHUNKS]]

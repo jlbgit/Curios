@@ -18,8 +18,10 @@ from typing import Any, Iterator
 import chromadb
 from chromadb.utils import embedding_functions
 
+from curios import bm25
 from curios.config import (
     ALL_TOPICS,
+    CHROMA_HNSW_SPACE,
     CHROMADB_PATH,
     CHUNK_SIZE,
     COLLECTION_NAME,
@@ -97,12 +99,12 @@ def _get_collections(client: chromadb.PersistentClient):
     coll = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": CHROMA_HNSW_SPACE},
     )
     sent = client.get_or_create_collection(
         name=SENTINEL_COLLECTION_NAME,
         embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": CHROMA_HNSW_SPACE},
     )
     return coll, sent
 
@@ -384,6 +386,7 @@ def _index_file(
                 documents=[text],
                 metadatas=[meta],
             )
+            bm25.insert(cid, text, project)
             written += 1
             chunk_index += 1
 
