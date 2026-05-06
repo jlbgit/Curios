@@ -5,22 +5,28 @@ import os
 import re
 from pathlib import Path
 
+# ── Paths & directories ─────────────────────────────────────
+# Override via env: CURIOS_CURSOR_HOME, CURIOS_DATA.
+# Default: ~/.cursor for Cursor IDE home, ~/.local/share/curios for data.
 CURSOR_HOME = Path(os.environ.get("CURIOS_CURSOR_HOME", Path.home() / ".cursor"))
 CURIOS_DATA = Path(os.environ.get("CURIOS_DATA", Path.home() / ".local" / "share" / "curios"))
 
-CHROMADB_PATH = CURIOS_DATA / "chromadb"
-TRANSCRIPTS_BASE = CURSOR_HOME / "projects"
-PREFERENCES_PATH = CURIOS_DATA / "preferences.md"
-CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"
-PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json"
-LOCK_PATH = CURIOS_DATA / ".index.lock"
-SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"
-INDEX_LOG_PATH = CURIOS_DATA / "index.log"
-LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"
+CHROMADB_PATH = CURIOS_DATA / "chromadb"          # persistent vector store
+TRANSCRIPTS_BASE = CURSOR_HOME / "projects"       # where Cursor writes agent transcripts
+PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference notes (future)
+CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
+PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json" # slug→friendly-name mapping
+LOCK_PATH = CURIOS_DATA / ".index.lock"           # flock file for concurrent indexer safety
+SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"  # tracks DB schema migrations
+INDEX_LOG_PATH = CURIOS_DATA / "index.log"        # stdout/stderr from background indexer
+LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"    # timestamp of last successful run
+BM25_DB_PATH = CURIOS_DATA / "bm25.db"            # SQLite FTS5 sparse index
 
-COLLECTION_NAME = "curios"
-SENTINEL_COLLECTION_NAME = "curios_sentinels"
+# ── ChromaDB collections ────────────────────────────────────
+COLLECTION_NAME = "curios"              # main chunk collection (embeddings + metadata)
+SENTINEL_COLLECTION_NAME = "curios_sentinels"  # one record per indexed file (dedup guard)
 
+# Bump to force a full re-index (deletes both collections, rewrites schema_version.json).
 SCHEMA_VERSION = 4
 
 # Indexed topic dimensions (boolean metadata topic_<name> per chunk). Excludes "general".
@@ -35,44 +41,63 @@ ALL_TOPICS: tuple[str, ...] = (
 )
 
 # ── Chunking ────────────────────────────────────────────────
-# Target maximum chunk length; splits prefer paragraph/sentence boundaries.
-# Smaller CHUNK_SIZE → more chunks, finer retrieval but more DB overhead.
-# Larger CHUNK_SIZE → fewer chunks, coarser retrieval granularity.
+# Target maximum chunk length in characters. Splits prefer paragraph then
+# sentence boundaries before falling back to hard character cuts.
+# Smaller → more chunks, finer retrieval granularity, more DB overhead.
+# Larger  → fewer chunks, coarser granularity, less overhead.
+# Sensible range: 400–1500. Default 800 balances granularity vs. context.
 CHUNK_SIZE = 800
-MIN_CHUNK_SIZE = 30  # chunks below this char count are discarded
-MAX_CHUNK_CHARS = 10_000  # hard cap on any single chunk
+# Chunks shorter than this (chars) are discarded as noise. Range: 10–100.
+MIN_CHUNK_SIZE = 30
+# Absolute hard cap on any single chunk (chars). Safety guard against
+# pathological inputs. Should be >> CHUNK_SIZE. Default 10 000.
+MAX_CHUNK_CHARS = 10_000
 
 # ── Depth classification ────────────────────────────────────
-# Conversations with fewer user messages than this are marked "shallow".
-# Shallow conversations are excluded by default from search and recap.
+# Conversations with fewer user messages than this are tagged depth="shallow"
+# at index time. Shallow conversations are excluded by default from search
+# and recap (callers can opt in via include_shallow=True).
+# 1 = only truly empty conversations are shallow; 3+ = aggressive filtering.
+# Default 2: single-exchange "hello world" chats are excluded.
 SHALLOW_THRESHOLD = 2
 
 # ── Novelty detection ───────────────────────────────────────
-# During indexing, each chunk is compared against existing chunks in the
-# same project. If cosine similarity exceeds NOVELTY_THRESHOLD, the chunk
-# is labelled "incremental" (semantically redundant). Otherwise "novel".
-# Higher threshold → stricter dedup → fewer incremental chunks.
+# At index time each chunk is compared against existing chunks in the same
+# project. If cosine similarity to any neighbor exceeds this threshold, the
+# chunk is tagged novelty="incremental" (semantically redundant); otherwise
+# novelty="novel". strict=True search excludes incremental chunks.
+# Higher → stricter dedup, fewer incremental tags, more unique chunks kept.
+# Lower  → more aggressive dedup, more chunks marked redundant.
+# Sensible range: 0.85–0.96. Default 0.92.
 NOVELTY_THRESHOLD = 0.92
-# How many nearest neighbors to check when evaluating novelty.
+# Number of nearest neighbors checked per chunk for the novelty comparison.
+# Higher catches more potential duplicates but slows indexing.
+# Sensible range: 3–15. Default 8.
 NOVELTY_N_RESULTS = 8
 
 # ── Topic scoring ───────────────────────────────────────────
-# Each chunk's user+assistant text is scanned for keyword hits.
-# Per-topic role weights (user, agent) sum to 3.0 so topics stay comparable.
-# Asymmetry reflects which voice typically originates each topic — e.g.
-# "preferences" is almost always user-voiced, "learnings" almost always
-# agent-synthesized from research/tool output.
+# Each chunk's user+assistant text is scanned for keyword hits from
+# TOPIC_KEYWORDS (below). Hits are weighted by role: (user_weight, agent_weight).
+# Pairs sum to ~3.0 so topics remain comparable. Asymmetry reflects which
+# voice typically originates each topic — e.g. "preferences" is almost always
+# user-voiced, "learnings" almost always agent-synthesized.
 TOPIC_ROLE_WEIGHTS: dict[str, tuple[float, float]] = {
-    "preferences":  (2.7, 0.3),
-    "learnings":    (0.5, 2.5),
-    "architecture": (1.0, 2.0),
-    "decisions":    (2.0, 1.0),
-    "problems":     (1.5, 1.5),
-    "ideas":        (1.5, 1.5),
-    "open_issues":  (1.5, 1.5),
+    "preferences":  (2.7, 0.3),   # user-heavy
+    "learnings":    (0.5, 2.5),   # agent-heavy (research/tool output)
+    "architecture": (1.0, 2.0),   # agent-leaning (design synthesis)
+    "decisions":    (2.0, 1.0),   # user-leaning (explicit choices)
+    "problems":     (1.5, 1.5),   # balanced
+    "ideas":        (1.5, 1.5),   # balanced
+    "open_issues":  (1.5, 1.5),   # balanced
 }
+# Fallback weights for any topic not listed above.
 _DEFAULT_ROLE_WEIGHTS: tuple[float, float] = (2.0, 1.0)
+# Weighted score must reach this threshold for a topic tag to be assigned.
+# Below this, only the single best-scoring topic (if > 0) is tagged as a
+# fallback; truly zero-signal chunks default to "general".
+# Sensible range: 1–4. Default 2.
 TOPIC_MIN_HITS_DEFAULT = 2
+# Per-topic overrides for TOPIC_MIN_HITS_DEFAULT.
 TOPIC_MIN_HITS: dict[str, int] = {
     "preferences": 2,
     "open_issues": 2,
@@ -81,64 +106,142 @@ TOPIC_MIN_HITS: dict[str, int] = {
 }
 
 # ── Search ranking ──────────────────────────────────────────
-# Max chunks returned per conversation in a single search.
-# Higher values improve recall for long conversations with multiple relevant
-# exchanges; lower values (1-2) maximise conversation diversity.
-# Ablation sweep (2026-05-05, Mempalace): raising from 3 to unlimited doubled
-# mean contextual recall (~0.26 → ~0.52) with no faithfulness regression.
-# Set to 10 to capture the bulk of that gain while still capping pathological
-# cases on projects with very few, very long conversations.
+# Max chunks returned from the same conversation in a single search.
+# Higher → better recall for long conversations with many relevant exchanges.
+# Lower (1–2) → maximises conversation diversity in results.
+# Ablation (2026-05-05): raising from 3→unlimited doubled mean contextual
+# recall (~0.26→~0.52) with no faithfulness regression.
+# Sensible range: 3–20. Default 10.
 MAX_CHUNKS_PER_CONV = 10
-# Distance multiplier for decision-tagged chunks when the query itself
-# contains decision-related keywords. Values < 1.0 boost them higher.
+# Distance multiplier applied to decision-tagged chunks when the query
+# itself contains decision-related keywords. < 1.0 boosts, > 1.0 penalises.
+# Sensible range: 0.7–1.0. Default 0.82.
 DECISION_BOOST = 0.82
 # Default max results when MCP caller omits n_results on curios_search.
+# Sensible range: 3–20. Default 5.
 SEARCH_DEFAULT_N_RESULTS = 5
-# Over-fetch multiplier: raw results fetched = n_results * this factor.
-# Higher → better reranking quality but slower queries.
+# Over-fetch multiplier: raw results fetched = n_results * SEARCH_OVERFETCH_FACTOR.
+# Higher → better reranking quality (more candidates to sort) but slower.
+# Sensible range: 4–15. Default 8.
 SEARCH_OVERFETCH_FACTOR = 8
-# Max characters returned per result in search and recap responses.
+# Max characters returned per result in search responses. Truncates long
+# chunks in the MCP output. Default 8 000 (~2 000 tokens).
 SEARCH_MAX_TEXT = 8_000
+# Max characters per conversation preview in curios_recap output.
+# Default 600 (~150 tokens).
 RECAP_PREVIEW_MAX = 600
 
-# ── Search fetch bounds (non-topic-filter path) ─────────────
-# Raw candidates fetched = max(n_results * SEARCH_OVERFETCH_FACTOR, SEARCH_FETCH_MIN)
-# then capped at SEARCH_FETCH_MAX.
+# ── Search fetch bounds ──────────────────────────────────────
+# Raw candidates fetched = max(n_results * SEARCH_OVERFETCH_FACTOR, SEARCH_FETCH_MIN),
+# then capped at SEARCH_FETCH_MAX. These bounds apply to the dense vector path.
+# Floor on raw candidates. Ensures a useful pool even with small n_results.
+# Sensible range: 10–50. Default 24.
 SEARCH_FETCH_MIN = 24
+# Ceiling on raw candidates. Prevents excessive Chroma queries on large n_results.
+# Sensible range: 60–300. Default 120.
 SEARCH_FETCH_MAX = 120
-# After ranking, build a candidate pool up to n_results * this factor before
-# slicing to n_results. Larger values improve ranking accuracy at minor cost.
+# After ranking, the candidate pool is expanded to n_results * this factor
+# before slicing to the final n_results. Larger → better ranking accuracy
+# at minor CPU cost (no extra DB calls). Sensible range: 2–5. Default 3.
 SEARCH_CANDIDATES_FACTOR = 3
 
+# ── Hybrid search (BM25 + dense) ────────────────────────────
+# When enabled, curios_search fuses dense vector results with BM25 sparse
+# results via Reciprocal Rank Fusion (RRF). Disabled = dense-only.
+# Override via env: CURIOS_HYBRID_SEARCH=0 for dense-only baseline.
+HYBRID_SEARCH_ENABLED = os.environ.get(
+    "CURIOS_HYBRID_SEARCH", "true"
+).strip().lower() not in ("0", "false", "no", "off")
+# Max query tokens sent to FTS5 MATCH. Longer queries are truncated to this
+# many OR-joined terms. Higher → broader sparse recall, risk of noise.
+# Sensible range: 10–40. Default 24.
+BM25_MAX_TERMS = 24
+# RRF smoothing constant. Lower → top ranks dominate more; higher → flatter
+# rank contribution. Standard IR default is 60. Sensible range: 20–100.
+RRF_K = 60
+# Number of BM25 results fetched per search. Higher → better sparse recall
+# but more candidates to merge. Sensible range: 20–100. Default 50.
+BM25_FETCH_N = 50
+
 # ── curios_recap ────────────────────────────────────────────
-# Hard cap on chunks scanned when building the recency-ordered recap.
+# Default max recent conversations returned when caller omits n_results.
+# Sensible range: 3–15. Default 5.
+RECAP_DEFAULT_N_RESULTS = 5
+# Hard cap on total chunks scanned when building the recency-ordered recap.
+# Protects against very large indices. Sensible range: 1000–20 000. Default 5 000.
 RECAP_FETCH_LIMIT = 5_000
 
 # ── curios_related ──────────────────────────────────────────
+# Default max related conversations returned when caller omits n_results.
+# Sensible range: 3–15. Default 5.
+RELATED_DEFAULT_N_RESULTS = 5
 # Max chunks loaded from the source conversation for probe selection.
+# Higher → more context to pick probes from, but slower on huge conversations.
+# Sensible range: 20–100. Default 50.
 RELATED_SOURCE_LIMIT = 50
-# Number of top-scored source chunks used as ANN probes.
+# Number of top-scored source chunks used as ANN probes into other
+# conversations. More probes → broader cross-reference recall.
+# Sensible range: 1–5. Default 3.
 RELATED_PROBE_CHUNKS = 3
+# Probe selection scoring weights. Each source chunk gets a score; the top
+# RELATED_PROBE_CHUNKS are selected. Higher weight → stronger preference.
+RELATED_PROBE_WEIGHT_DEPTH = 1.0   # bonus for non-shallow conversations
+RELATED_PROBE_WEIGHT_NOVEL = 0.5   # bonus for novel (non-incremental) chunks
+RELATED_PROBE_WEIGHT_FIRST = 0.3   # bonus for the first chunk (conversation opener)
 # Raw candidates per probe = min(n_results * this factor, RELATED_FETCH_MAX).
+# Higher → broader candidate pool per probe. Sensible range: 3–10. Default 6.
 RELATED_OVERFETCH_FACTOR = 6
+# Ceiling on candidates fetched per probe. Sensible range: 30–120. Default 60.
 RELATED_FETCH_MAX = 60
 
 # ── Multi-query retrieval ───────────────────────────────────
-# When enabled with an active topic filter, run additional semantic queries
-# (templates + keyword-augmented variant) and merge results by best distance.
+# When enabled AND a topic filter is active, curios_search fires additional
+# semantic queries (from FIELD_QUERY_TEMPLATES + a keyword-augmented variant)
+# and merges results by best distance. Improves recall for topic-filtered
+# searches at the cost of extra Chroma queries.
 MULTI_QUERY_ENABLED = True
 # Cap on distinct query strings per search (includes the user's primary query).
+# Sensible range: 2–6. Default 4.
 MULTI_QUERY_MAX_VARIANTS = 4
 # Number of top topic keywords appended to form the keyword-augmented variant.
+# More → broader keyword coverage, but dilutes semantic focus.
+# Sensible range: 3–10. Default 5.
 MULTI_QUERY_KW_COUNT = 5
 
-# ── ChromaDB resilience ─────────────────────────────────────
+# ── ChromaDB ─────────────────────────────────────────────────
+# Distance metric for HNSW index. "cosine" suits normalised sentence embeddings.
+# Alternatives: "l2", "ip". Changing requires a full re-index.
+CHROMA_HNSW_SPACE = "cosine"
+# Retries on transient ChromaDB InternalError (e.g. HNSW race conditions).
+# Sensible range: 1–5. Default 2.
 CHROMA_RETRY_ATTEMPTS = 2
+# Seconds between retries. Default 0.5.
 CHROMA_RETRY_DELAY = 0.5
+# Page size when iterating all chunks (stats, verify, build-bm25).
+# Larger → fewer round-trips, more memory. Sensible range: 500–5000. Default 2000.
+CHROMA_ITER_BATCH = 2000
+# Batch size for bulk deletes (prune commands).
+# Larger → fewer round-trips. Sensible range: 100–2000. Default 500.
+CHROMA_DELETE_BATCH = 500
+
+# ── CLI display (curios-maintain stats/status) ───────────────
+# Character width for horizontal rulers and table formatting.
+CLI_RULER_WIDTH = 62
+# Max conversations listed in the shallow / fully-incremental sections.
+CLI_MAX_LIST_ITEMS = 20
+
+# ── Cursor integration ───────────────────────────────────────
+# Timeout in seconds for the sessionEnd hook command in hooks.json.
+# If the indexer doesn't finish in this window, Cursor kills the process.
+# Sensible range: 5–30. Default 10.
+SESSION_HOOK_TIMEOUT = 10
 
 HOME = Path.home()
 
-# Topic-specific query phrases for recall (used only when topic filter is set).
+# ── Topic query templates ────────────────────────────────────
+# Additional natural-language queries fired per topic when multi-query retrieval
+# is active (MULTI_QUERY_ENABLED + topic filter). Two templates per topic;
+# at most MULTI_QUERY_MAX_VARIANTS total queries including the user's original.
 FIELD_QUERY_TEMPLATES: dict[str, tuple[str, ...]] = {
     "decisions": (
         "what decisions were made and why, what was the rationale",
@@ -170,6 +273,11 @@ FIELD_QUERY_TEMPLATES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# ── Topic keywords ───────────────────────────────────────────
+# Case-insensitive phrases scanned in chunk text for topic scoring.
+# Per-topic hit count is weighted by TOPIC_ROLE_WEIGHTS and compared
+# against TOPIC_MIN_HITS to decide tagging. Includes English + Spanish.
+# Extend per-user via CUSTOM_KEYWORDS_PATH (custom_keywords.json).
 TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "decisions": (
         "decided",
@@ -478,6 +586,9 @@ def project_name_from_import_slug(slug: str) -> str | None:
     except (ValueError, binascii.Error, UnicodeDecodeError):
         return None
 
+# ── Secret redaction ─────────────────────────────────────────
+# Regex patterns applied to all chunk text before indexing. Matches are
+# replaced with "[REDACTED]" to prevent secrets leaking into the DB.
 REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "[REDACTED]"),
     (re.compile(r"AKIA[A-Z0-9]{16}"), "[REDACTED]"),

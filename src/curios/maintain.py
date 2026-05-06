@@ -16,8 +16,14 @@ from typing import Any
 
 import chromadb
 
+from curios import bm25
 from curios.config import (
+    BM25_DB_PATH,
+    CHROMA_DELETE_BATCH,
+    CHROMA_ITER_BATCH,
     CHROMADB_PATH,
+    CLI_MAX_LIST_ITEMS,
+    CLI_RULER_WIDTH,
     COLLECTION_NAME,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
@@ -30,8 +36,8 @@ from curios.config import (
 )
 from curios.indexer import discover_transcripts, run_index
 
-_W = 62
-_MAX_LIST = 20
+_W = CLI_RULER_WIDTH
+_MAX_LIST = CLI_MAX_LIST_ITEMS
 
 EXPORT_MANIFEST_VERSION = 1
 EXPORT_TRANSCRIPTS_DIR = "transcripts"
@@ -195,7 +201,7 @@ def _get_coll(name: str):
 
 def _iter_all_metadatas(coll):
     offset = 0
-    batch = 2000
+    batch = CHROMA_ITER_BATCH
     while True:
         got = coll.get(include=["metadatas", "documents"], limit=batch, offset=offset)
         ids = got.get("ids") or []
@@ -215,6 +221,28 @@ def _db_size_bytes() -> int:
             except OSError:
                 pass
     return size
+
+
+def cmd_build_bm25() -> int:
+    """(Re)build BM25 FTS5 index from existing ChromaDB data."""
+    coll = _get_coll(COLLECTION_NAME)
+    total = coll.count()
+    if total == 0:
+        print("no chunks in ChromaDB", file=sys.stderr)
+        return 1
+    all_data = coll.get(include=["documents", "metadatas"], limit=total)
+    ids = all_data.get("ids") or []
+    docs = all_data.get("documents") or []
+    metas = all_data.get("metadatas") or []
+    rows: list[tuple[str, str, str]] = []
+    for cid, doc, meta in zip(ids, docs, metas):
+        if not meta:
+            continue
+        proj = str(meta.get("project") or "unknown")
+        rows.append((str(cid), doc or "", proj))
+    bm25.insert_batch(rows)
+    print(f"Built BM25 index: {len(rows)} chunks → {BM25_DB_PATH}")
+    return 0
 
 
 # ── stats data model ───────────────────────────────────────
@@ -627,8 +655,8 @@ def cmd_prune_project_before(project: str, before: str) -> int:
             continue
         if m < cutoff:
             to_delete.append(mid)
-    for i in range(0, len(to_delete), 500):
-        batch = to_delete[i : i + 500]
+    for i in range(0, len(to_delete), CHROMA_DELETE_BATCH):
+        batch = to_delete[i : i + CHROMA_DELETE_BATCH]
         if batch:
             coll.delete(ids=batch)
     print("deleted", len(to_delete))
@@ -647,8 +675,8 @@ def cmd_prune_stale() -> int:
         p = TRANSCRIPTS_BASE / str(rel)
         if not p.is_file():
             to_delete.append(mid)
-    for i in range(0, len(to_delete), 500):
-        batch = to_delete[i : i + 500]
+    for i in range(0, len(to_delete), CHROMA_DELETE_BATCH):
+        batch = to_delete[i : i + CHROMA_DELETE_BATCH]
         if batch:
             coll.delete(ids=batch)
     print("deleted", len(to_delete))
@@ -662,6 +690,8 @@ def _cli() -> int:
     sub.add_parser("status")
     sub.add_parser("stats")
     sub.add_parser("verify")
+
+    sub.add_parser("build-bm25")
 
     p_re = sub.add_parser("reindex")
     p_re.add_argument("--project", type=str, default=None)
@@ -690,6 +720,8 @@ def _cli() -> int:
         return cmd_stats()
     if args.cmd == "verify":
         return cmd_verify()
+    if args.cmd == "build-bm25":
+        return cmd_build_bm25()
     if args.cmd == "reindex":
         return cmd_reindex(args.project)
     if args.cmd == "prune":
