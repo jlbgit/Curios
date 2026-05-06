@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4 — 2026-05-06
+
+- **Structure-aware chunking:** replaced fixed 800-char slicing in `_chunk_exchange()` with paragraph-boundary splitting (`\n\n+`) and sentence-boundary fallback (`(?<=[.!?])\s+`). A hard-split safety net handles sentences that themselves exceed `CHUNK_SIZE`. `CHUNK_SIZE` now acts as a target maximum rather than a fixed window. Produces more coherent chunks with fewer mid-sentence cuts. Requires reindex (`curios-maintain reindex`).
+- **Boolean topic metadata (schema v4):** replaced the `"topics": "decisions,architecture"` comma-separated string field with individual boolean fields per topic (`topic_decisions`, `topic_architecture`, etc.) for all 7 topics. ChromaDB can now apply topic filtering as a native pre-filter (`where: {topic_decisions: True}`) before ANN search instead of a Python post-filter over a 500-candidate pool. Topic filtering is now on par with other `where`-clause filters in performance (~30–50ms vs ~150ms for topic-filtered queries).
+- **Removed topic overfetch hack:** `TOPIC_FILTER_OVERFETCH` (50) and `TOPIC_FILTER_FETCH_MIN` (500) removed from `config.py` and `server.py`. Topic and non-topic search paths now use the same `fetch_n` formula (`n_results * SEARCH_OVERFETCH_FACTOR`, capped at `SEARCH_FETCH_MAX`).
+- **`ALL_TOPICS` constant:** added to `config.py` as the canonical tuple of topic names used for boolean field generation (indexer) and display reconstruction (server).
+- **`_topics_display()` helper:** new server function reconstructs a comma-separated topic string from boolean metadata fields for response formatting; replaces all `meta.get("topics")` reads in `curios_recap`, `curios_search`, and `curios_related`.
+- **`_rank_distance()` updated:** signature changed from `topics: str | None` to `meta: dict[str, Any]`; uses `meta.get("topic_decisions")` boolean directly.
+- **`_topic_match()` deleted:** no longer needed; ChromaDB pre-filters replace the Python substring check.
+- **Schema bumped:** `SCHEMA_VERSION` 3 → 4. Triggers automatic collection rebuild on next index run.
+- **Eval results (schema v4, Mempalace, topic-filter, n=15):** faithfulness improved to 0.99 avg (from 0.95 baseline); contextual recall 0.41 avg (mixed — `open_issues` +0.44, `architecture` +0.22 vs `preferences` -0.42, `ideas` -0.33). Relevancy 0.59 avg. 6 test failures remain (same topics as before, thresholds unchanged).
+
 ## 0.4.3 — 2026-05-06
 
 - **Removed `INCREMENTAL_PENALTY`:** DOE sweep confirmed this parameter had zero effect on retrieval at `MAX_CHUNKS_PER_CONV=10` — no topic produced different results with IP=1.15 vs 1.0. The `novelty` argument is removed from `_rank_distance()` and the constant is deleted from `config.py`. `DECISION_BOOST` remains (it does produce a minor rank change for `decisions` queries).

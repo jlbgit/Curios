@@ -21,10 +21,21 @@ LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"
 COLLECTION_NAME = "curios"
 SENTINEL_COLLECTION_NAME = "curios_sentinels"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+# Indexed topic dimensions (boolean metadata topic_<name> per chunk). Excludes "general".
+ALL_TOPICS: tuple[str, ...] = (
+    "decisions",
+    "architecture",
+    "learnings",
+    "problems",
+    "preferences",
+    "ideas",
+    "open_issues",
+)
 
 # ── Chunking ────────────────────────────────────────────────
-# Controls how conversation exchanges are split into embeddable chunks.
+# Target maximum chunk length; splits prefer paragraph/sentence boundaries.
 # Smaller CHUNK_SIZE → more chunks, finer retrieval but more DB overhead.
 # Larger CHUNK_SIZE → fewer chunks, coarser retrieval granularity.
 CHUNK_SIZE = 800
@@ -86,11 +97,6 @@ SEARCH_DEFAULT_N_RESULTS = 5
 # Over-fetch multiplier: raw results fetched = n_results * this factor.
 # Higher → better reranking quality but slower queries.
 SEARCH_OVERFETCH_FACTOR = 8
-# When a topic filter is set, topic-tagged chunks must survive a post-filter
-# step. Since Chroma cannot filter by topic substring natively, we enlarge the
-# candidate pool so all topic-tagged chunks in scope are considered.
-TOPIC_FILTER_OVERFETCH = 50
-TOPIC_FILTER_FETCH_MIN = 500
 # Max characters returned per result in search and recap responses.
 SEARCH_MAX_TEXT = 8_000
 RECAP_PREVIEW_MAX = 600

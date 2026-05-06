@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import re
 import hashlib
 import json
 import logging
@@ -18,6 +19,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 from curios.config import (
+    ALL_TOPICS,
     CHROMADB_PATH,
     CHUNK_SIZE,
     COLLECTION_NAME,
@@ -207,29 +209,58 @@ def _score_topics(user_text: str, assistant_text: str) -> str:
     return "general"
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _hard_split_oversized(text: str) -> list[str]:
+    """Split text when no paragraph/sentence boundary yields pieces under CHUNK_SIZE."""
+    out: list[str] = []
+    pos = 0
+    while pos < len(text):
+        piece = text[pos : pos + CHUNK_SIZE]
+        if len(piece.strip()) >= MIN_CHUNK_SIZE:
+            out.append(piece[:MAX_CHUNK_CHARS])
+        pos += CHUNK_SIZE
+    return out
+
+
 def _chunk_exchange(user: str, assistant: str) -> list[str]:
     head = f"User:\n{user}\n\nAssistant:\n"
-    if len(head) + len(assistant) <= CHUNK_SIZE:
-        chunk = head + assistant
-        return [chunk[:MAX_CHUNK_CHARS]] if chunk.strip() else []
+    full = head + assistant
+    if len(full) <= CHUNK_SIZE:
+        return [full[:MAX_CHUNK_CHARS]] if full.strip() else []
+
+    paragraphs = re.split(r"\n\n+", assistant)
 
     chunks: list[str] = []
-    first_budget = CHUNK_SIZE - len(head)
-    if first_budget < MIN_CHUNK_SIZE:
-        first_budget = min(CHUNK_SIZE, max(MIN_CHUNK_SIZE, CHUNK_SIZE // 2))
-    pos = 0
-    first_assist = assistant[:first_budget]
-    c0 = (head + first_assist)[:MAX_CHUNK_CHARS]
-    if len(c0.strip()) >= MIN_CHUNK_SIZE:
-        chunks.append(c0)
-    pos = len(first_assist)
-    while pos < len(assistant):
-        piece = assistant[pos : pos + CHUNK_SIZE]
-        if len(piece.strip()) < MIN_CHUNK_SIZE:
-            break
-        chunks.append(piece[:MAX_CHUNK_CHARS])
-        pos += CHUNK_SIZE
-    return [c for c in chunks if len(c.strip()) >= MIN_CHUNK_SIZE]
+    current = head
+
+    for para in paragraphs:
+        if len(para) > CHUNK_SIZE:
+            sentences = _SENTENCE_SPLIT.split(para)
+            for sent in sentences:
+                pieces = [sent] if len(sent) <= CHUNK_SIZE else _hard_split_oversized(sent)
+                for piece in pieces:
+                    add_len = len(piece) + (1 if current and current[-1:] != "\n" else 0)
+                    if len(current) + add_len > CHUNK_SIZE and len(current.strip()) >= MIN_CHUNK_SIZE:
+                        chunks.append(current[:MAX_CHUNK_CHARS])
+                        current = piece
+                    else:
+                        sep = " " if current and current[-1:] != "\n" else ""
+                        current = current + sep + piece
+            continue
+
+        if len(current) + len(para) + 2 > CHUNK_SIZE and len(current.strip()) >= MIN_CHUNK_SIZE:
+            chunks.append(current[:MAX_CHUNK_CHARS])
+            current = para
+        else:
+            joiner = "\n\n" if current != head else ""
+            current = current + joiner + para
+
+    if len(current.strip()) >= MIN_CHUNK_SIZE:
+        chunks.append(current[:MAX_CHUNK_CHARS])
+
+    return chunks
 
 
 def _safe_id_part(s: str) -> str:
@@ -330,11 +361,12 @@ def _index_file(
             if not dry_run:
                 nov = _novelty_label(coll, text, project, conversation_id)
             cid = f"curios_{safe_proj}_{conversation_id}_{chunk_index}"
+            topic_set = {t.strip() for t in topics.split(",") if t.strip()}
             meta = {
                 "project": project,
                 "conversation_id": conversation_id,
                 "chunk_index": chunk_index,
-                "topics": topics,
+                **{f"topic_{t}": (t in topic_set) for t in ALL_TOPICS},
                 "depth": depth,
                 "novelty": nov,
                 "source_mtime": mtime,
