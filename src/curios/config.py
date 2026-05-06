@@ -73,15 +73,16 @@ TOPIC_MIN_HITS: dict[str, int] = {
 # Max chunks returned per conversation in a single search.
 # Higher values improve recall for long conversations with multiple relevant
 # exchanges; lower values (1-2) maximise conversation diversity.
-# Useful range: 1 (strict diversity) to 5 (recall-focused). Set to 3 as a
-# balance between diversity and recall based on evaluation benchmarks.
-MAX_CHUNKS_PER_CONV = 3
-# Distance multiplier applied to "incremental" chunks during search.
-# Values > 1.0 push redundant content lower in results.
-INCREMENTAL_PENALTY = 1.15
+# Ablation sweep (2026-05-05, Mempalace): raising from 3 to unlimited doubled
+# mean contextual recall (~0.26 → ~0.52) with no faithfulness regression.
+# Set to 10 to capture the bulk of that gain while still capping pathological
+# cases on projects with very few, very long conversations.
+MAX_CHUNKS_PER_CONV = 10
 # Distance multiplier for decision-tagged chunks when the query itself
 # contains decision-related keywords. Values < 1.0 boost them higher.
 DECISION_BOOST = 0.82
+# Default max results when MCP caller omits n_results on curios_search.
+SEARCH_DEFAULT_N_RESULTS = 5
 # Over-fetch multiplier: raw results fetched = n_results * this factor.
 # Higher → better reranking quality but slower queries.
 SEARCH_OVERFETCH_FACTOR = 8
@@ -94,7 +95,74 @@ TOPIC_FILTER_FETCH_MIN = 500
 SEARCH_MAX_TEXT = 8_000
 RECAP_PREVIEW_MAX = 600
 
+# ── Search fetch bounds (non-topic-filter path) ─────────────
+# Raw candidates fetched = max(n_results * SEARCH_OVERFETCH_FACTOR, SEARCH_FETCH_MIN)
+# then capped at SEARCH_FETCH_MAX.
+SEARCH_FETCH_MIN = 24
+SEARCH_FETCH_MAX = 120
+# After ranking, build a candidate pool up to n_results * this factor before
+# slicing to n_results. Larger values improve ranking accuracy at minor cost.
+SEARCH_CANDIDATES_FACTOR = 3
+
+# ── curios_recap ────────────────────────────────────────────
+# Hard cap on chunks scanned when building the recency-ordered recap.
+RECAP_FETCH_LIMIT = 5_000
+
+# ── curios_related ──────────────────────────────────────────
+# Max chunks loaded from the source conversation for probe selection.
+RELATED_SOURCE_LIMIT = 50
+# Number of top-scored source chunks used as ANN probes.
+RELATED_PROBE_CHUNKS = 3
+# Raw candidates per probe = min(n_results * this factor, RELATED_FETCH_MAX).
+RELATED_OVERFETCH_FACTOR = 6
+RELATED_FETCH_MAX = 60
+
+# ── Multi-query retrieval ───────────────────────────────────
+# When enabled with an active topic filter, run additional semantic queries
+# (templates + keyword-augmented variant) and merge results by best distance.
+MULTI_QUERY_ENABLED = True
+# Cap on distinct query strings per search (includes the user's primary query).
+MULTI_QUERY_MAX_VARIANTS = 4
+# Number of top topic keywords appended to form the keyword-augmented variant.
+MULTI_QUERY_KW_COUNT = 5
+
+# ── ChromaDB resilience ─────────────────────────────────────
+CHROMA_RETRY_ATTEMPTS = 2
+CHROMA_RETRY_DELAY = 0.5
+
 HOME = Path.home()
+
+# Topic-specific query phrases for recall (used only when topic filter is set).
+FIELD_QUERY_TEMPLATES: dict[str, tuple[str, ...]] = {
+    "decisions": (
+        "what decisions were made and why, what was the rationale",
+        "what did we choose, what approach did we go with",
+    ),
+    "architecture": (
+        "software architecture design patterns components structure",
+        "how is the system designed, what are the key modules and layers",
+    ),
+    "learnings": (
+        "what did we learn, research findings, key insights discovered",
+        "what does the documentation say, what did analysis reveal",
+    ),
+    "problems": (
+        "bugs errors crashes failures and how they were fixed",
+        "what went wrong, root cause analysis, workarounds applied",
+    ),
+    "preferences": (
+        "coding preferences conventions style rules the user prefers",
+        "what the user always does or never does, personal rules",
+    ),
+    "ideas": (
+        "ideas for future improvements, brainstormed suggestions",
+        "what if we could, worth exploring, possible approaches",
+    ),
+    "open_issues": (
+        "open issues todos unresolved questions still pending",
+        "what still needs to be done, remaining work, blockers",
+    ),
+}
 
 TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "decisions": (
