@@ -38,6 +38,7 @@ Changelog = "https://github.com/jlbgit/Curios/blob/main/CHANGELOG.md"
 # producing no visible progress during long eval runs. Disable it globally
 # since we don't use the Confident AI integration.
 addopts = "-p no:deepeval"
+pythonpath = ["tests/eval", "src"]
 
 [build-system]
 requires = ["setuptools>=68"]
