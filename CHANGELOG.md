@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.5 — 2026-05-06
+
+- **Hybrid BM25 + vector search (RRF fusion):** `curios_search` now runs a parallel SQLite FTS5 sparse retrieval path alongside ChromaDB dense ANN search and fuses both ranked lists via Reciprocal Rank Fusion (RRF, `k=60`). Zero new dependencies — uses stdlib `sqlite3`. BM25 sidecar stored at `~/.local/share/curios/bm25.db` (~5–25 KB for typical corpora). Fast mode A/B eval on Mempalace (decisions topic): **answer relevancy +0.14**, contextual recall **+0.11** hybrid ON vs OFF.
+- **`src/curios/bm25.py` (new module):** FTS5 virtual table `chunks_fts(chunk_id UNINDEXED, text, project UNINDEXED)`; public API: `insert`, `insert_batch`, `search`, `count`, `close_connection`. Query sanitization strips FTS5 operator chars and builds OR-joined token expressions so long natural-language queries produce hits rather than syntax errors. Thread-safe via `threading.Lock` + `check_same_thread=False` connection; WAL journal mode.
+- **Indexer wired:** `_index_file()` in `indexer.py` calls `bm25.insert(cid, text, project)` immediately after each `coll.upsert()` — no additional indexing step required for new transcripts.
+- **Lazy bootstrap on first search:** `_ensure_bm25()` in `server.py` detects an empty `bm25.db` on first `curios_search` call and populates it from existing ChromaDB data in one batch (`bm25.insert_batch`). Runs once per process, guarded by `_bm25_bootstrapped` flag. For ~8,500 chunks takes <5 seconds.
+- **`curios-maintain build-bm25`:** new maintenance subcommand to explicitly (re)build the BM25 index from all ChromaDB chunks. Run after `prune` or any Chroma-only bulk delete.
+- **Feature flag:** `HYBRID_SEARCH_ENABLED` in `config.py` (default `True`); env-overridable via `CURIOS_HYBRID_SEARCH=0` for dense-only baseline. When disabled, no BM25 code executes and no `bm25.db` is created.
+- **New config constants:** `BM25_DB_PATH`, `HYBRID_SEARCH_ENABLED`, `RRF_K` (60), `BM25_FETCH_N` (50) in `config.py`. `build_rag_params()` in `run_eval.py` now includes the three hybrid flags.
+- **A/B eval tooling:** `tests/eval/compare_hybrid_ab.py` new script — runs retrieval under both modes via `CURIOS_HYBRID_SEARCH` env subprocess, then scores both fixture pairs with DeepEval. New `--fast` flag limits to one topic and 1–2 metrics (2–4 judge API calls, finishes in ~2 minutes). New `--skip-retrieval` flag reuses existing fixtures. New `--tag` flag on `run_eval.py` for labelled output filenames.
+
 ## 0.4.4 — 2026-05-06
 
 - **Structure-aware chunking:** replaced fixed 800-char slicing in `_chunk_exchange()` with paragraph-boundary splitting (`\n\n+`) and sentence-boundary fallback (`(?<=[.!?])\s+`). A hard-split safety net handles sentences that themselves exceed `CHUNK_SIZE`. `CHUNK_SIZE` now acts as a target maximum rather than a fixed window. Produces more coherent chunks with fewer mid-sentence cuts. Requires reindex (`curios-maintain reindex`).
