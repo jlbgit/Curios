@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3 — 2026-05-06
+
+- **Removed `INCREMENTAL_PENALTY`:** DOE sweep confirmed this parameter had zero effect on retrieval at `MAX_CHUNKS_PER_CONV=10` — no topic produced different results with IP=1.15 vs 1.0. The `novelty` argument is removed from `_rank_distance()` and the constant is deleted from `config.py`. `DECISION_BOOST` remains (it does produce a minor rank change for `decisions` queries).
+
+## 0.4.2 — 2026-05-05
+
+- **`MAX_CHUNKS_PER_CONV` raised from 3 to 10:** ablation sweep on Mempalace showed this single parameter doubled mean contextual recall (~0.26 → ~0.52) with no faithfulness regression. The previous cap of 3 severely limited recall for projects with few, long conversations where relevant information was spread across many exchanges. The other heuristics tested (`INCREMENTAL_PENALTY` off, `include_shallow`, `topic_filter` on) had negligible or negative effect.
+- **Multi-query retrieval:** when a topic filter is active, `curios_search` now runs up to `MULTI_QUERY_MAX_VARIANTS` (4) distinct queries — the user's original query, topic-specific template phrases from `FIELD_QUERY_TEMPLATES`, and a keyword-augmented variant — then merges results by best distance. Controlled via `MULTI_QUERY_ENABLED` in `config.py`.
+- **Field-to-query templates:** new `FIELD_QUERY_TEMPLATES` dict in `config.py` maps each of the 7 topics to 2 semantically distinct query phrases (e.g. decisions → "what decisions were made and why" + "what did we choose, what approach did we go with"). Used by the multi-query path for structured recall.
+- **Configurable `SEARCH_DEFAULT_N_RESULTS`:** MCP `curios_search` default `n_results` now reads from `config.py` instead of a hardcoded `5`.
+- **Config hygiene:** extracted ~15 magic numbers from `server.py` to named constants in `config.py`: `SEARCH_FETCH_MIN`/`MAX`, `SEARCH_CANDIDATES_FACTOR`, `RECAP_FETCH_LIMIT`, `RELATED_SOURCE_LIMIT`, `RELATED_PROBE_CHUNKS`, `RELATED_OVERFETCH_FACTOR`/`FETCH_MAX`, `CHROMA_RETRY_ATTEMPTS`/`DELAY`, `MULTI_QUERY_ENABLED`/`MAX_VARIANTS`/`KW_COUNT`.
+- **Eval pipeline:** new `tests/eval/` directory with user-agnostic evaluation infrastructure — `_config.py` (shared constants), `.env.example` (secrets template), `ground_truth.py` (LLM-based reference extraction with `GROUND_TRUTH_MAX_ITEMS` budget), `run_eval.py` (query Curios + record answers/tokens/runtime), `test_rag_quality.py` (DeepEval contextual recall + faithfulness assertions), `smoke_test.py` (API + search sanity check). `pyproject.toml` `pythonpath` wired for pytest imports.
+- **Ablation sweep harness:** new `tests/eval/run_sweep.py` runs a configurable grid of retrieval parameter experiments — monkey-patches `curios.config` + `curios.server` at runtime, generates answer fixtures, invokes the DeepEval judge, and prints a comparison table. Sweep results saved as `tests/eval/fixtures/eval_report_ablation_*.json`.
+- **MCP integration tests:** new `tests/test_mcp_interactions.py` covers all 3 MCP tools (`curios_recap`, `curios_search`, `curios_related`) — project-specific, cross-project, edge cases, and concurrent access scenarios.
+- **Token savings benchmark:** new `tests/test_token_savings.py` compares Curios search output cost against reading raw JSONL transcripts; runs as both pytest and standalone script.
+
 ## 0.4.1 — 2026-05-04
 
 - **`curios_recap` reinstated as a dedicated MCP tool:** the v0.4.0 consolidation of recap into `curios_search` (omit `query`) proved unreliable — empty-string queries triggered low-quality vector searches instead of time-ordered recap. `curios_recap` is now a first-class tool again with its own `project` and `n_results` parameters. `curios_search` `query` is now required. Tool count: 3 (`curios_recap`, `curios_search`, `curios_related`).
