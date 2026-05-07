@@ -1,6 +1,6 @@
 [project]
 name = "curios"
-version = "0.5.0"
+version = "0.5.2"
 description = "Cross-project transcript memory for Cursor IDE"
 readme = "README.md"
 license = {text = "MIT"}

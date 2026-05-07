@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.2 — 2026-05-07
+
+### Bug fix
+- **Project name resolution:** `curios_recap` and `curios_search` now resolve the user-provided `project` argument through `sentinels.resolve_project()`, which normalises case and returns all stored name variants. The internal filter signature changed from a single `project: str | None` to `projects: list[str] | None`; a `_chroma_project_condition()` helper emits either `$eq` or `$in` depending on how many variants were found. Previously, a project name that differed in case or punctuation from the stored slug would silently return zero results.
+
+### Tests
+- **New test suite (`tests/`):** 12 test modules covering the full stack:
+  - `test_bm25.py` — FTS5 insert, search, delete, wipe, thread safety
+  - `test_config.py` — env-var overrides, keyword loading, compiled patterns
+  - `test_indexer.py` — chunking, novelty detection, sentinel logic, batched upserts
+  - `test_sentinels.py` — SQLite schema, sentinel read/write, recap cache, project resolution
+  - `test_server.py` — all three MCP tools, RRF fusion, topic filtering, score field naming
+  - `test_maintain.py` — status/stats/verify/reindex/prune/export CLI commands
+  - `test_integration.py` — end-to-end index → search round-trips on synthetic transcripts
+  - `test_mcp_interactions.py` — concurrent MCP access, cross-project queries, edge cases
+  - `test_token_savings.py` — token reduction benchmark (Curios output vs raw JSONL)
+  - `conftest.py` — shared fixtures (tmp data dir, synthetic transcripts, indexed collection)
+  - `README.md` — test authoring guide and CI instructions
+- **`pyproject.toml`:** `pytest`, `pytest-asyncio`, and `pytest-mock` added to the `dev` dependency group.
+
 ## 0.5.1 — 2026-05-07
 
 ### Maintenance & MCP hygiene
@@ -62,7 +82,7 @@ Major correctness, performance, and robustness pass driven by a full RAG pipelin
 
 ## 0.4.5 — 2026-05-06
 
-- **Hybrid BM25 + vector search (RRF fusion):** `curios_search` now runs a parallel SQLite FTS5 sparse retrieval path alongside ChromaDB dense ANN search and fuses both ranked lists via Reciprocal Rank Fusion (RRF, `k=60`). Zero new dependencies — uses stdlib `sqlite3`. BM25 sidecar stored at `~/.local/share/curios/bm25.db` (~5–25 KB for typical corpora). Fast mode A/B eval on Mempalace (decisions topic): **answer relevancy +0.14**, contextual recall **+0.11** hybrid ON vs OFF.
+- **Hybrid BM25 + vector search (RRF fusion):** `curios_search` now runs a parallel SQLite FTS5 sparse retrieval path alongside ChromaDB dense ANN search and fuses both ranked lists via Reciprocal Rank Fusion (RRF, `k=60`). Zero new dependencies — uses stdlib `sqlite3`. BM25 sidecar stored at `~/.local/share/curios/bm25.db` (~5–25 KB for typical corpora). Fast mode A/B eval on a personal corpus (decisions topic): **answer relevancy +0.14**, contextual recall **+0.11** hybrid ON vs OFF.
 - **`src/curios/bm25.py` (new module):** FTS5 virtual table `chunks_fts(chunk_id UNINDEXED, text, project UNINDEXED)`; public API: `insert`, `insert_batch`, `search`, `count`, `close_connection`. Query sanitization strips FTS5 operator chars and builds OR-joined token expressions so long natural-language queries produce hits rather than syntax errors. Thread-safe via `threading.Lock` + `check_same_thread=False` connection; WAL journal mode.
 - **Indexer wired:** `_index_file()` in `indexer.py` calls `bm25.insert(cid, text, project)` immediately after each `coll.upsert()` — no additional indexing step required for new transcripts.
 - **Lazy bootstrap on first search:** `_ensure_bm25()` in `server.py` detects an empty `bm25.db` on first `curios_search` call and populates it from existing ChromaDB data in one batch (`bm25.insert_batch`). Runs once per process, guarded by `_bm25_bootstrapped` flag. For ~8,500 chunks takes <5 seconds.
@@ -81,7 +101,7 @@ Major correctness, performance, and robustness pass driven by a full RAG pipelin
 - **`_rank_distance()` updated:** signature changed from `topics: str | None` to `meta: dict[str, Any]`; uses `meta.get("topic_decisions")` boolean directly.
 - **`_topic_match()` deleted:** no longer needed; ChromaDB pre-filters replace the Python substring check.
 - **Schema bumped:** `SCHEMA_VERSION` 3 → 4. Triggers automatic collection rebuild on next index run.
-- **Eval results (schema v4, Mempalace, topic-filter, n=15):** faithfulness improved to 0.99 avg (from 0.95 baseline); contextual recall 0.41 avg (mixed — `open_issues` +0.44, `architecture` +0.22 vs `preferences` -0.42, `ideas` -0.33). Relevancy 0.59 avg. 6 test failures remain (same topics as before, thresholds unchanged).
+- **Eval results (schema v4, personal corpus, topic-filter, n=15):** faithfulness improved to 0.99 avg (from 0.95 baseline); contextual recall 0.41 avg (mixed — `open_issues` +0.44, `architecture` +0.22 vs `preferences` -0.42, `ideas` -0.33). Relevancy 0.59 avg. 6 test failures remain (same topics as before, thresholds unchanged).
 
 ## 0.4.3 — 2026-05-06
 
@@ -89,7 +109,7 @@ Major correctness, performance, and robustness pass driven by a full RAG pipelin
 
 ## 0.4.2 — 2026-05-05
 
-- **`MAX_CHUNKS_PER_CONV` raised from 3 to 10:** ablation sweep on Mempalace showed this single parameter doubled mean contextual recall (~0.26 → ~0.52) with no faithfulness regression. The previous cap of 3 severely limited recall for projects with few, long conversations where relevant information was spread across many exchanges. The other heuristics tested (`INCREMENTAL_PENALTY` off, `include_shallow`, `topic_filter` on) had negligible or negative effect.
+- **`MAX_CHUNKS_PER_CONV` raised from 3 to 10:** ablation sweep on a personal corpus showed this single parameter doubled mean contextual recall (~0.26 → ~0.52) with no faithfulness regression. The previous cap of 3 severely limited recall for projects with few, long conversations where relevant information was spread across many exchanges. The other heuristics tested (`INCREMENTAL_PENALTY` off, `include_shallow`, `topic_filter` on) had negligible or negative effect.
 - **Multi-query retrieval:** when a topic filter is active, `curios_search` now runs up to `MULTI_QUERY_MAX_VARIANTS` (4) distinct queries — the user's original query, topic-specific template phrases from `FIELD_QUERY_TEMPLATES`, and a keyword-augmented variant — then merges results by best distance. Controlled via `MULTI_QUERY_ENABLED` in `config.py`.
 - **Field-to-query templates:** new `FIELD_QUERY_TEMPLATES` dict in `config.py` maps each of the 7 topics to 2 semantically distinct query phrases (e.g. decisions → "what decisions were made and why" + "what did we choose, what approach did we go with"). Used by the multi-query path for structured recall.
 - **Configurable `SEARCH_DEFAULT_N_RESULTS`:** MCP `curios_search` default `n_results` now reads from `config.py` instead of a hardcoded `5`.
@@ -114,7 +134,7 @@ Major correctness, performance, and robustness pass driven by a full RAG pipelin
 - **`curios cursor check`:** new subcommand that compares SHA-256 hashes of the deployed rule and skill files against the package source and reports which are stale. Exit code 1 if any are out of date; 0 if all match. Use after `uv tool install --reinstall` to confirm Cursor files are current.
 - **Server startup staleness warning:** `curios-server` now checks deployed file hashes at startup and emits a `[curios] WARNING` to stderr if any are stale, pointing to `curios cursor install`. The check is fast (three small file reads) and silently swallowed if anything goes wrong.
 - **Keyword discovery skill:** new `curios-keyword-discovery` skill scans real conversation transcripts to find discriminative phrases missing from the default topic keywords. Discovered phrases are saved to `custom_keywords.json` and merged at runtime.
-- **Recall improvements:** systematic evaluation-driven tuning of search and topic scoring, improving average recall from 0.07 to 0.45 on the archABM benchmark while keeping faithfulness at 0.98.
+- **Recall improvements:** systematic evaluation-driven tuning of search and topic scoring, improving average recall from 0.07 to 0.45 on a personal evaluation corpus while keeping faithfulness at 0.98.
 - **Per-topic role weights:** replaced the global `USER_WEIGHT=2` with per-topic `(user, agent)` weight tuples summing to 3.0. Preferences are strongly user-biased (2.7/0.3), learnings are agent-biased (0.5/2.5), and collaborative topics like problems/ideas/open_issues are balanced (1.5/1.5). Configured in `TOPIC_ROLE_WEIGHTS`.
 - **New `learnings` topic:** replaced `planning` (which scored poorly in evaluation) with `learnings` — captures research findings, documentation synthesis, web search results, and analysis outputs. Agent-biased role weight reflects that these are typically agent-synthesized.
 - **Two-tier topic tagging:** topics above threshold are multi-tagged (as before), but chunks below threshold with any keyword signal now get tagged with their best-scoring topic instead of falling back to `general`. Only truly zero-signal chunks are tagged `general`. Eliminates false-negative topic filtering.

@@ -1,6 +1,6 @@
 # Curios
 
-**v0.4.1**
+**v0.5.2**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -22,14 +22,14 @@ Curios passively indexes your agent conversation transcripts into a local semant
 | **Zero effort**     | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization                                                                                                                                                        |
 | **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
 | **Fully local**     | Single `~/.local/share/curios/` directory — no Docker, no background services, no extra API keys                                                                                                                                                                   |
-| **Lean surface**    | Two read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                       |
+| **Lean surface**    | Three read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                       |
 
 
 > *Store everything raw, make it findable, cost nothing extra, require zero user effort.*
 
 **Why not [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and direct inspiration for Curios. For the Cursor use case it has friction: the agent must explicitly call a save tool (most sessions go unrecorded), 29 MCP tools bloat every system prompt, and it targets broad personal KB management rather than making your IDE conversation history passively reusable.
 
-Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes two MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
+Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes three MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
 
 ## Installation
 
@@ -238,7 +238,7 @@ Custom keywords are merged with the defaults — they add to, never replace, the
 
 ### `project_overrides.json`
 
-Curios infers project names from Cursor's project directory slugs (the folder names under `~/.cursor/projects/`). The heuristic works well for simple paths, but complex directory structures can produce unexpected names (e.g. `~/Documents/ProjectX/GITLAB/Entregable-E2-1` might resolve to `E2` instead of `ProjectX`).
+Curios infers project names from Cursor's project directory slugs (the folder names under `~/.cursor/projects/`). The heuristic works well for simple paths, but complex directory structures can produce unexpected names (e.g. `~/Documents/Work/GITLAB/module-v2` might resolve to `module` instead of `Work`).
 
 This file lets you map specific slugs to the project name you want. Format: a JSON object mapping Cursor project slugs to desired project names.
 
@@ -293,12 +293,14 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 **Default behavior** (`strict=false`, `include_shallow=false`):
 
 - Excludes shallow conversations (< 2 user messages)
-- Includes all novelty levels, but demotes incremental chunks in ranking (x1.15 distance penalty)
-- Limits to `MAX_CHUNKS_PER_CONV` (3) chunks per conversation for diversity, while allowing multiple relevant exchanges from the same conversation
+- Includes all novelty levels (incremental chunks are not penalised but may rank lower due to RRF fusion)
+- Limits to `MAX_CHUNKS_PER_CONV` (10) chunks per conversation for diversity, while allowing multiple relevant exchanges from the same conversation
 - Groups results by project when no `project` filter is set
 - Boosts `decisions`-tagged chunks when the query matches decision keywords
 
-**Topic-filtered search** (`topic=...`): uses an enlarged candidate pool (50x overfetch, min 500 candidates) before post-filtering by topic. This prevents topic-tagged chunks from being drowned out by semantically similar but differently-tagged content.
+**Hybrid retrieval:** every search combines dense vector ANN (ChromaDB) with sparse BM25/FTS5 keyword retrieval (SQLite). Both ranked lists are fused via Reciprocal Rank Fusion (RRF, `k=60`) so exact-match keyword hits and semantic similarity both contribute. Disable with `CURIOS_HYBRID_SEARCH=0` for pure dense baseline.
+
+**Topic-filtered search** (`topic=...`): topic tags are stored as boolean metadata fields per chunk; ChromaDB applies the filter as a native pre-filter before ANN search. BM25 also widens its candidate pool (`BM25_FILTER_OVERFETCH_FACTOR=4`) when a topic or strict filter is active.
 
 **Strict mode** (`strict=true`): same as default, plus hard-excludes incremental chunks entirely.
 
@@ -418,7 +420,7 @@ An informal RAG evaluation was run against a personal conversation corpus (8,493
 
 **Faithfulness is the strongest signal** — Curios does not hallucinate. Recall is the known weak point, particularly for topics like `learnings` where insights are spread thinly across many conversations.
 
-*Formal test scripts are being added. Contributions improving relevancy and recall are very welcome!*
+*Test suite available under `tests/` — unit, integration, and MCP interaction tests. Contributions improving relevancy and recall are very welcome!*
 
 ## Security
 
