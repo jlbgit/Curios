@@ -3,18 +3,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
 import sys
 from importlib.resources import files
 from pathlib import Path
 
+from curios.config import CURSOR_HOME, SESSION_HOOK_TIMEOUT
+
 _BINARY_HINT = "Run 'uv tool install git+https://github.com/jlbgit/Curios' first."
-
-
-def _cursor_home() -> Path:
-    env = os.environ.get("CURIOS_CURSOR_HOME")
-    return Path(env) if env else Path.home() / ".cursor"
 
 
 def _load_json(path: Path) -> dict:
@@ -64,7 +60,7 @@ def staleness_report(cursor_home: Path | None = None) -> list[tuple[str, Path, b
     from the package source.  Callers can use this to warn users or automate
     re-deployment.
     """
-    home = cursor_home or _cursor_home()
+    home = cursor_home or CURSOR_HOME
     results: list[tuple[str, Path, bool]] = []
     for pkg_name, rel_path in _CURSOR_DEPLOYMENTS:
         deployed = home / rel_path
@@ -94,7 +90,7 @@ def cmd_cursor_check() -> int:
 
 
 def cmd_cursor_install() -> int:
-    cursor_home = _cursor_home()
+    cursor_home = CURSOR_HOME
     server_bin = _resolve_binary("curios-server")
     index_bin = _resolve_binary("curios-index")
 
@@ -108,7 +104,7 @@ def cmd_cursor_install() -> int:
     cfg = _load_json(hooks_path)
     cfg.setdefault("version", 1)
     session_end = cfg.setdefault("hooks", {}).setdefault("sessionEnd", [])
-    entry = {"command": f"{index_bin} --session-hook", "timeout": 10}
+    entry = {"command": f"{index_bin} --session-hook", "timeout": SESSION_HOOK_TIMEOUT}
     existing = [i for i, h in enumerate(session_end) if "curios-index" in h.get("command", "")]
     if existing:
         session_end[existing[0]] = entry
@@ -136,7 +132,7 @@ def cmd_cursor_install() -> int:
 
 
 def cmd_cursor_uninstall() -> int:
-    cursor_home = _cursor_home()
+    cursor_home = CURSOR_HOME
 
     mcp_path = cursor_home / "mcp.json"
     cfg = _load_json(mcp_path)

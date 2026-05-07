@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
+import re
 import json
 import logging
 import os
@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import chromadb
-from chromadb.utils import embedding_functions
 
+from curios import bm25, sentinels
 from curios.config import (
+    ALL_TOPICS,
+    CHROMA_HNSW_SPACE,
     CHROMADB_PATH,
+    CHUNK_HARD_SPLIT_OVERLAP,
     CHUNK_SIZE,
     COLLECTION_NAME,
     CURIOS_DATA,
@@ -29,18 +32,19 @@ from curios.config import (
     MIN_CHUNK_SIZE,
     NOVELTY_N_RESULTS,
     NOVELTY_THRESHOLD,
+    RECAP_PREVIEW_MAX,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
-    SENTINEL_COLLECTION_NAME,
     SHALLOW_THRESHOLD,
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
     TOPIC_ROLE_WEIGHTS,
     TRANSCRIPTS_BASE,
     _DEFAULT_ROLE_WEIGHTS,
-    get_topic_keywords,
+    get_compiled_topic_patterns,
     conversation_id_from_path,
     extract_project_name,
+    get_embedding_function,
     redact_secrets,
     transcript_relative_path,
 )
@@ -50,6 +54,8 @@ logging.basicConfig(
     format="%(asctime)s [curios-indexer] %(levelname)s %(message)s",
 )
 log = logging.getLogger("curios.indexer")
+
+_LOGGED_PROJECT_SLUGS: set[str] = set()
 
 NOVELTY_DISTANCE_MAX = 1.0 - NOVELTY_THRESHOLD
 
@@ -79,11 +85,18 @@ def _ensure_schema(client: chromadb.PersistentClient) -> None:
         except (json.JSONDecodeError, OSError, ValueError):
             need_reset = True
     if need_reset:
-        for name in (COLLECTION_NAME, SENTINEL_COLLECTION_NAME):
-            try:
-                client.delete_collection(name)
-            except Exception as e:
-                log.debug("could not delete collection %s during schema reset: %s", name, e)
+        try:
+            client.delete_collection(COLLECTION_NAME)
+        except Exception as e:
+            log.debug("could not delete collection %s during schema reset: %s", COLLECTION_NAME, e)
+        try:
+            bm25.wipe()
+        except Exception as e:
+            log.debug("bm25 wipe during schema reset failed (ignored): %s", e)
+        try:
+            sentinels.wipe()
+        except Exception as e:
+            log.debug("sentinels wipe during schema reset failed (ignored): %s", e)
         SCHEMA_STATE_PATH.write_text(
             json.dumps({"version": SCHEMA_VERSION}, indent=2),
             encoding="utf-8",
@@ -91,18 +104,13 @@ def _ensure_schema(client: chromadb.PersistentClient) -> None:
 
 
 def _get_collections(client: chromadb.PersistentClient):
-    ef = embedding_functions.DefaultEmbeddingFunction()
+    ef = get_embedding_function()
     coll = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": CHROMA_HNSW_SPACE},
     )
-    sent = client.get_or_create_collection(
-        name=SENTINEL_COLLECTION_NAME,
-        embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
-    )
-    return coll, sent
+    return coll
 
 
 def _line_text(record: dict[str, Any]) -> str:
@@ -169,9 +177,8 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
     return exchanges, user_messages
 
 
-def _keyword_hits(text: str, keywords: tuple[str, ...]) -> int:
-    lower = text.lower()
-    return sum(1 for k in keywords if k in lower)
+def _keyword_hits(text: str, patterns: tuple[re.Pattern[str], ...]) -> int:
+    return sum(len(pat.findall(text)) for pat in patterns)
 
 
 def _score_topics(user_text: str, assistant_text: str) -> str:
@@ -184,14 +191,15 @@ def _score_topics(user_text: str, assistant_text: str) -> str:
        weakly-signalled content as "general".
     Only truly zero-signal chunks fall back to "general".
     """
+    patterns_by_topic = get_compiled_topic_patterns()
     scores: dict[str, float] = {}
-    for topic, keywords in get_topic_keywords().items():
+    for topic, patterns in patterns_by_topic.items():
         if topic == "general":
             continue
         user_w, agent_w = TOPIC_ROLE_WEIGHTS.get(topic, _DEFAULT_ROLE_WEIGHTS)
         scores[topic] = (
-            _keyword_hits(user_text, keywords) * user_w
-            + _keyword_hits(assistant_text, keywords) * agent_w
+            _keyword_hits(user_text, patterns) * user_w
+            + _keyword_hits(assistant_text, patterns) * agent_w
         )
 
     confident = [
@@ -207,29 +215,64 @@ def _score_topics(user_text: str, assistant_text: str) -> str:
     return "general"
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _hard_split_oversized(text: str) -> list[str]:
+    """Split text when no paragraph/sentence boundary yields pieces under CHUNK_SIZE."""
+    out: list[str] = []
+    step = max(1, CHUNK_SIZE - CHUNK_HARD_SPLIT_OVERLAP)
+    pos = 0
+    n = len(text)
+    while pos < n:
+        piece = text[pos : pos + CHUNK_SIZE]
+        if len(piece.strip()) >= MIN_CHUNK_SIZE:
+            out.append(piece[:MAX_CHUNK_CHARS])
+        if pos + CHUNK_SIZE >= n:
+            break
+        pos += step
+    return out
+
+
 def _chunk_exchange(user: str, assistant: str) -> list[str]:
     head = f"User:\n{user}\n\nAssistant:\n"
-    if len(head) + len(assistant) <= CHUNK_SIZE:
-        chunk = head + assistant
-        return [chunk[:MAX_CHUNK_CHARS]] if chunk.strip() else []
+    preamble = user[:200].rstrip()
+    cont_header = f"User (asked):\n{preamble}\n\nAssistant (cont.):\n"
+    full = head + assistant
+    if len(full) <= CHUNK_SIZE:
+        return [full[:MAX_CHUNK_CHARS]] if full.strip() else []
+
+    paragraphs = re.split(r"\n\n+", assistant)
 
     chunks: list[str] = []
-    first_budget = CHUNK_SIZE - len(head)
-    if first_budget < MIN_CHUNK_SIZE:
-        first_budget = min(CHUNK_SIZE, max(MIN_CHUNK_SIZE, CHUNK_SIZE // 2))
-    pos = 0
-    first_assist = assistant[:first_budget]
-    c0 = (head + first_assist)[:MAX_CHUNK_CHARS]
-    if len(c0.strip()) >= MIN_CHUNK_SIZE:
-        chunks.append(c0)
-    pos = len(first_assist)
-    while pos < len(assistant):
-        piece = assistant[pos : pos + CHUNK_SIZE]
-        if len(piece.strip()) < MIN_CHUNK_SIZE:
-            break
-        chunks.append(piece[:MAX_CHUNK_CHARS])
-        pos += CHUNK_SIZE
-    return [c for c in chunks if len(c.strip()) >= MIN_CHUNK_SIZE]
+    current = head
+
+    for para in paragraphs:
+        if len(para) > CHUNK_SIZE:
+            sentences = _SENTENCE_SPLIT.split(para)
+            for sent in sentences:
+                pieces = [sent] if len(sent) <= CHUNK_SIZE else _hard_split_oversized(sent)
+                for piece in pieces:
+                    add_len = len(piece) + (1 if current and current[-1:] != "\n" else 0)
+                    if len(current) + add_len > CHUNK_SIZE and len(current.strip()) >= MIN_CHUNK_SIZE:
+                        chunks.append(current[:MAX_CHUNK_CHARS])
+                        current = cont_header + piece
+                    else:
+                        sep = " " if current and current[-1:] != "\n" else ""
+                        current = current + sep + piece
+            continue
+
+        if len(current) + len(para) + 2 > CHUNK_SIZE and len(current.strip()) >= MIN_CHUNK_SIZE:
+            chunks.append(current[:MAX_CHUNK_CHARS])
+            current = cont_header + para
+        else:
+            joiner = "\n\n" if current != head else ""
+            current = current + joiner + para
+
+    if len(current.strip()) >= MIN_CHUNK_SIZE:
+        chunks.append(current[:MAX_CHUNK_CHARS])
+
+    return chunks
 
 
 def _safe_id_part(s: str) -> str:
@@ -243,66 +286,82 @@ def _safe_id_part(s: str) -> str:
     return x or "p"
 
 
-def _sentinel_id(abs_path: str) -> str:
-    h = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:32]
-    return f"sentinel_{h}"
+def _recap_preview_for_index(
+    exchanges: list[dict[str, str]], first_chunk_text: str
+) -> str:
+    for ex in exchanges:
+        u = redact_secrets(ex["user"].strip())
+        if len(u) > 40:
+            return u[:RECAP_PREVIEW_MAX]
+    if exchanges:
+        u0 = redact_secrets(exchanges[0]["user"].strip())
+        if u0:
+            return u0[:RECAP_PREVIEW_MAX]
+    return (first_chunk_text or "")[:RECAP_PREVIEW_MAX]
 
 
-def _already_indexed(sent_coll, abs_path: str) -> bool:
-    sid = _sentinel_id(abs_path)
-    try:
-        got = sent_coll.get(ids=[sid], include=["metadatas"])
-    except Exception as e:
-        log.debug("sentinel lookup failed for %s: %s", abs_path, e)
-        return False
-    if not got["ids"]:
-        return False
-    meta = (got["metadatas"] or [None])[0] or {}
-    return int(meta.get("schema_version", -1)) == SCHEMA_VERSION
-
-
-def _novelty_label(
+def _novelty_labels(
     coll,
-    chunk_text: str,
+    chunk_texts: list[str],
     project: str,
     conversation_id: str,
-) -> str:
+) -> list[str]:
+    if not chunk_texts:
+        return []
     try:
         res = coll.query(
-            query_texts=[chunk_text],
+            query_texts=chunk_texts,
             n_results=NOVELTY_N_RESULTS,
             where={"project": {"$eq": project}},
             include=["distances", "metadatas"],
         )
     except Exception as e:
-        log.debug("novelty query failed for conversation %s: %s", conversation_id, e)
-        return "novel"
-    dists = (res.get("distances") or [[]])[0]
-    metas = (res.get("metadatas") or [[]])[0]
-    if not dists:
-        return "novel"
-    for dist, meta in zip(dists, metas):
-        if meta is None:
-            continue
-        if meta.get("conversation_id") == conversation_id:
-            continue
-        if dist is None:
-            continue
-        if float(dist) < NOVELTY_DISTANCE_MAX:
-            return "incremental"
-    return "novel"
+        log.debug("batched novelty query failed for conversation %s: %s", conversation_id, e)
+        return ["novel"] * len(chunk_texts)
+    all_dists = res.get("distances") or []
+    all_metas = res.get("metadatas") or []
+    out: list[str] = []
+    for i in range(len(chunk_texts)):
+        dists = all_dists[i] if i < len(all_dists) else []
+        metas = all_metas[i] if i < len(all_metas) else []
+        label = "novel"
+        for dist, meta in zip(dists, metas):
+            if meta is None or dist is None:
+                continue
+            if meta.get("conversation_id") == conversation_id:
+                continue
+            if float(dist) < NOVELTY_DISTANCE_MAX:
+                label = "incremental"
+                break
+        out.append(label)
+    return out
+
+
+def _delete_existing_conversation(coll, project: str, conversation_id: str) -> int:
+    got = coll.get(
+        where={
+            "$and": [
+                {"project": {"$eq": project}},
+                {"conversation_id": {"$eq": conversation_id}},
+            ]
+        },
+    )
+    ids = got.get("ids") or []
+    if ids:
+        coll.delete(ids=ids)
+        bm25.delete_many(ids)
+    return len(ids)
 
 
 def _index_file(
     path: Path,
     coll,
-    sent_coll,
     force: bool,
     dry_run: bool,
     project_override: str | None = None,
 ) -> int:
     abs_path = str(path.resolve())
-    if not force and _already_indexed(sent_coll, abs_path):
+    if not force and sentinels.is_indexed(abs_path, SCHEMA_VERSION):
         log.debug("already indexed, skipping %s", path.name)
         return 0
 
@@ -311,64 +370,97 @@ def _index_file(
         return 0
 
     project = project_override if project_override is not None else extract_project_name(path)
+    try:
+        idx = path.resolve().parts.index("projects")
+        slug = path.resolve().parts[idx + 1]
+    except (ValueError, IndexError):
+        slug = ""
+    if slug and slug not in _LOGGED_PROJECT_SLUGS:
+        _LOGGED_PROJECT_SLUGS.add(slug)
+        log.info("resolved project name %r for slug %r", project, slug)
+
     conversation_id = conversation_id_from_path(path)
+    if force and not dry_run:
+        n_del = _delete_existing_conversation(coll, project, conversation_id)
+        if n_del:
+            log.debug("force re-index: removed %s prior chunks for %s", n_del, conversation_id)
     rel = transcript_relative_path(path)
     mtime = int(path.stat().st_mtime)
     depth = "shallow" if user_count < SHALLOW_THRESHOLD else "standard"
     safe_proj = _safe_id_part(project)
-    written = 0
-    chunk_index = 0
+    all_conv_topics: set[str] = set()
 
+    pending: list[tuple[str, str, dict[str, Any]]] = []
+    chunk_index = 0
     for ex in exchanges:
         user_text = redact_secrets(ex["user"])
         asst_text = redact_secrets(ex["assistant"])
         topics = _score_topics(user_text, asst_text)
+        topic_set = {t.strip() for t in topics.split(",") if t.strip()}
+        for t in topic_set:
+            if t != "general":
+                all_conv_topics.add(t)
         for text in _chunk_exchange(user_text, asst_text):
             if len(text) > MAX_CHUNK_CHARS:
                 text = text[:MAX_CHUNK_CHARS]
-            nov = "novel"
-            if not dry_run:
-                nov = _novelty_label(coll, text, project, conversation_id)
             cid = f"curios_{safe_proj}_{conversation_id}_{chunk_index}"
-            meta = {
+            partial_meta: dict[str, Any] = {
                 "project": project,
                 "conversation_id": conversation_id,
                 "chunk_index": chunk_index,
-                "topics": topics,
+                **{f"topic_{t}": (t in topic_set) for t in ALL_TOPICS},
                 "depth": depth,
-                "novelty": nov,
                 "source_mtime": mtime,
                 "source_rel_path": rel,
                 "exchange_count": user_count,
-                "schema_version": SCHEMA_VERSION,
             }
-            if dry_run:
-                log.info("dry-run chunk %s topics=%s", cid, topics)
-                written += 1
-                chunk_index += 1
-                continue
-            coll.upsert(
-                ids=[cid],
-                documents=[text],
-                metadatas=[meta],
-            )
-            written += 1
+            pending.append((cid, text, partial_meta))
             chunk_index += 1
 
-    if not dry_run and (written > 0 or exchanges):
-        sid = _sentinel_id(abs_path)
-        sent_coll.upsert(
-            ids=[sid],
-            documents=["."],
-            metadatas=[
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "source_rel_path": rel,
-                    "indexed_at": int(time.time()),
-                }
-            ],
+    topics_label = ",".join(sorted(all_conv_topics)) if all_conv_topics else "general"
+
+    def _push_recap_cache(first_chunk: str) -> None:
+        preview = _recap_preview_for_index(exchanges, first_chunk)
+        sentinels.upsert_conversation(
+            conversation_id=conversation_id,
+            project=project,
+            mtime=mtime,
+            exchange_count=user_count,
+            depth=depth,
+            topics=topics_label,
+            preview=preview,
         )
-    return written
+
+    if not pending:
+        if not dry_run:
+            sentinels.mark_indexed(abs_path, SCHEMA_VERSION)
+            _push_recap_cache("")
+        return 0
+
+    if dry_run:
+        for cid, _, partial in pending:
+            topic_labels = ",".join(t for t in ALL_TOPICS if partial.get(f"topic_{t}")) or "general"
+            log.info("dry-run chunk %s topics=%s", cid, topic_labels)
+        return len(pending)
+
+    novelties = _novelty_labels(coll, [t for _, t, _ in pending], project, conversation_id)
+    ids: list[str] = []
+    docs: list[str] = []
+    metas: list[dict[str, Any]] = []
+    bm25_rows: list[tuple[str, str, str]] = []
+    for (cid, text, partial), nov in zip(pending, novelties):
+        meta = {**partial, "novelty": nov}
+        ids.append(cid)
+        docs.append(text)
+        metas.append(meta)
+        bm25_rows.append((cid, text, project))
+
+    coll.upsert(ids=ids, documents=docs, metadatas=metas)
+    bm25.insert_many(bm25_rows)
+
+    sentinels.mark_indexed(abs_path, SCHEMA_VERSION)
+    _push_recap_cache(pending[0][1])
+    return len(pending)
 
 
 def discover_transcripts(project_filter: str | None = None) -> list[Path]:
@@ -379,6 +471,16 @@ def discover_transcripts(project_filter: str | None = None) -> list[Path]:
     for pattern in ("*/agent-transcripts/*/*.jsonl", "*/agent-transcripts/*.jsonl"):
         for p in base.glob(pattern):
             by_key[str(p.resolve())] = p
+    if not by_key:
+        try:
+            if any(base.iterdir()):
+                log.warning(
+                    "TRANSCRIPTS_BASE (%s) is non-empty but no transcripts matched known glob patterns. "
+                    "Cursor may have changed its transcript layout.",
+                    base,
+                )
+        except OSError:
+            pass
     out: list[Path] = []
     for p in sorted(by_key.values(), key=lambda x: str(x)):
         if project_filter:
@@ -405,14 +507,14 @@ def run_index(
         pass
     client = chromadb.PersistentClient(path=str(CHROMADB_PATH))
     _ensure_schema(client)
-    coll, sent_coll = _get_collections(client)
+    coll = _get_collections(client)
     total_chunks = 0
     files_done = 0
     for path in paths:
         n = 0
         with index_lock():
             try:
-                n = _index_file(path, coll, sent_coll, force, dry_run, project_override)
+                n = _index_file(path, coll, force, dry_run, project_override)
             except OSError as e:
                 log.warning("skip %s: %s", path, e)
                 n = 0
@@ -456,16 +558,14 @@ def _session_hook() -> None:
         cmd = [exe, "--file", str(path.resolve())]
 
     CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-    log_file = open(INDEX_LOG_PATH, "a")
-    subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=log_file,
-        start_new_session=True,
-        env=os.environ.copy(),
-    )
-    log_file.close()
+    with open(INDEX_LOG_PATH, "a") as log_file:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
 
 
 def _cli() -> int:

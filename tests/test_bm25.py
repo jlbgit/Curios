@@ -1,0 +1,77 @@
+"""Tests for curios.bm25 (SQLite FTS5 sidecar)."""
+
+from __future__ import annotations
+
+import pytest
+
+from curios import bm25
+from tests.conftest import patch_curios_roots
+
+
+def test_fts_match_expression_filters_stopwords():
+    from curios.bm25 import _fts_match_expression
+
+    expr = _fts_match_expression(
+        "what is the best way to handle errors in python"
+    )
+    lower = expr.lower()
+    for bad in ("what", "is", "the", "to", "in"):
+        assert bad not in lower.split(), expr
+    for keep in ("best", "way", "handle", "errors", "python"):
+        assert keep in lower, expr
+
+
+def test_sanitize_fts_query_strips_operators():
+    from curios.bm25 import _sanitize_fts_query
+
+    out = _sanitize_fts_query('foo "bar" +baz (test)')
+    assert "+" not in out
+    assert "(" not in out
+    assert "foo" in out.lower() and "bar" in out.lower()
+
+
+@pytest.fixture
+def bm25_env(monkeypatch, tmp_path):
+    patch_curios_roots(monkeypatch, tmp_path)
+    bm25.wipe()
+    yield tmp_path
+    bm25.close_connection()
+
+
+def test_insert_search_count(bm25_env):
+    bm25.insert("c1", "alpha beta gamma", "P1")
+    assert bm25.count() == 1
+    assert "c1" in bm25.search("alpha", ["P1"], 5)
+    assert bm25.search("alpha", ["Other"], 5) == []
+
+
+def test_insert_many_replace_same_id(bm25_env):
+    bm25.insert_many([("c1", "first", "P"), ("c2", "second", "P")])
+    assert bm25.count() == 2
+    bm25.insert_many([("c1", "replaced text", "P")])
+    assert bm25.count() == 2
+    assert bm25.search("replaced", ["P"], 5) == ["c1"]
+
+
+def test_delete_many(bm25_env):
+    bm25.insert_many([("a", "x", "P"), ("b", "y", "P")])
+    bm25.delete_many(["a"])
+    assert bm25.count() == 1
+    assert bm25.search("x", ["P"], 5) == []
+
+
+def test_search_without_project(bm25_env):
+    bm25.insert("z1", "uniquewordxyz", "Q")
+    ids = bm25.search("uniquewordxyz", None, 10)
+    assert "z1" in ids
+
+
+def test_wipe_clears_table(bm25_env):
+    bm25.insert("k", "text", "P")
+    assert bm25.count() == 1
+    bm25.wipe()
+    assert bm25.count() == 0
+
+
+def test_insert_batch_removed():
+    assert not hasattr(bm25, "insert_batch")
