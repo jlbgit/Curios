@@ -1,0 +1,95 @@
+"""Shared pytest fixtures for Curios tests."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import chromadb
+import pytest
+
+from curios import bm25, sentinels
+from curios.config import ALL_TOPICS, CHROMA_HNSW_SPACE, COLLECTION_NAME, get_embedding_function
+
+
+def topic_meta_false() -> dict:
+    return {f"topic_{t}": False for t in ALL_TOPICS}
+
+
+def reset_server_globals() -> None:
+    import curios.server as srv
+
+    srv._client_instance = None
+    srv._bm25_bootstrapped = False
+
+
+def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point all Curios data paths under tmp_path; close SQLite caches."""
+    data = tmp_path / "curios_data"
+    chroma_path = data / "chromadb"
+    proj_base = tmp_path / "projects"
+
+    monkeypatch.setattr("curios.config.CURIOS_DATA", data)
+    monkeypatch.setattr("curios.config.CHROMADB_PATH", chroma_path)
+    monkeypatch.setattr("curios.config.BM25_DB_PATH", data / "bm25.db")
+    monkeypatch.setattr("curios.config.SENTINELS_DB_PATH", data / "sentinels.db")
+    monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", proj_base)
+    monkeypatch.setattr("curios.config.LOCK_PATH", data / ".index.lock")
+    monkeypatch.setattr("curios.config.SCHEMA_STATE_PATH", data / "schema_version.json")
+
+    monkeypatch.setattr("curios.bm25.CURIOS_DATA", data)
+    monkeypatch.setattr("curios.bm25.BM25_DB_PATH", data / "bm25.db")
+
+    monkeypatch.setattr("curios.sentinels.CURIOS_DATA", data)
+    monkeypatch.setattr("curios.sentinels.SENTINELS_DB_PATH", data / "sentinels.db")
+
+    monkeypatch.setattr("curios.maintain.CHROMADB_PATH", chroma_path)
+    monkeypatch.setattr("curios.maintain.TRANSCRIPTS_BASE", proj_base)
+    monkeypatch.setattr("curios.maintain.BM25_DB_PATH", data / "bm25.db")
+
+    monkeypatch.setattr("curios.indexer.CURIOS_DATA", data)
+    monkeypatch.setattr("curios.indexer.LOCK_PATH", data / ".index.lock")
+    monkeypatch.setattr("curios.indexer.CHROMADB_PATH", chroma_path)
+    monkeypatch.setattr("curios.indexer.SCHEMA_STATE_PATH", data / "schema_version.json")
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", proj_base)
+
+    monkeypatch.setattr("curios.server.CHROMADB_PATH", chroma_path)
+
+    chroma_path.mkdir(parents=True, exist_ok=True)
+    bm25.close_connection()
+    sentinels.close_connection()
+    reset_server_globals()
+    return tmp_path
+
+
+def make_chroma_collection(chroma_path: Path):
+    client = chromadb.PersistentClient(path=str(chroma_path))
+    return client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        embedding_function=get_embedding_function(),
+        metadata={"hnsw:space": CHROMA_HNSW_SPACE},
+    )
+
+
+@pytest.fixture
+def curios_data_env(monkeypatch, tmp_path):
+    patch_curios_roots(monkeypatch, tmp_path)
+    yield tmp_path
+    bm25.close_connection()
+    sentinels.close_connection()
+    reset_server_globals()
+
+
+@pytest.fixture
+def sample_transcript_path(tmp_path) -> Path:
+    """Minimal valid Cursor-style JSONL (two exchanges, enough for standard depth)."""
+    agent = tmp_path / "slug" / "agent-transcripts"
+    agent.mkdir(parents=True)
+    p = agent / "conv-sample.jsonl"
+    lines = [
+        '{"role": "user", "message": {"content": "We decided to use Redis for caching."}}',
+        '{"role": "assistant", "message": {"content": "Good call for session state."}}',
+        '{"role": "user", "message": {"content": "I prefer short functions."}}',
+        '{"role": "assistant", "message": {"content": "Noted for style."}}',
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8")
+    return p
