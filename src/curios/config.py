@@ -764,20 +764,16 @@ def extract_project_name(transcript_path: Path) -> str:
     if not segments:
         return "unknown"
 
-    home_name = HOME.name.lower()
-    while segments and segments[0].lower() == home_name:
+    home_parts = [p.lower() for p in HOME.parts if p != "/"]
+    while segments and home_parts and segments[0].lower() == home_parts[0]:
         segments = segments[1:]
+        home_parts = home_parts[1:]
 
     skip = {"home", "users", "documents", "documentos", "applications", "apps", "projects", "workspace", "code", "src", "git", "gitlab", "github", "dev"}
     meaningful = [s for s in segments if s.lower() not in skip and not s.isdigit()]
     if not meaningful:
         meaningful = [s for s in segments if not s.isdigit()] or segments
-    if len(meaningful) > 2:
-        pick = "/".join(meaningful[-2:])
-    elif meaningful:
-        pick = meaningful[-1]
-    else:
-        pick = slug
+    pick = meaningful[-1] if meaningful else slug
     return pick.upper() if pick.islower() and len(pick) <= 4 else pick
 
 

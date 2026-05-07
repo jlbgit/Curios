@@ -161,19 +161,63 @@ def upsert_conversation(
         conn.commit()
 
 
+def resolve_project(user_input: str) -> list[str]:
+    """Map a user-provided project name to stored project name(s).
+
+    Tries exact match first, then case-insensitive match on the last
+    segment (after '/'), then substring. Returns all matches so callers
+    can use IN-style filters.
+    """
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute("SELECT DISTINCT project FROM conversations").fetchall()
+    stored = [r[0] for r in rows if r and r[0]]
+    if not stored:
+        return [user_input]
+
+    needle = user_input.strip()
+    needle_lower = needle.lower()
+
+    exact = [p for p in stored if p == needle]
+    if exact:
+        return exact
+
+    case_insensitive = [p for p in stored if p.lower() == needle_lower]
+    if case_insensitive:
+        return case_insensitive
+
+    suffix = [p for p in stored if p.rsplit("/", 1)[-1].lower() == needle_lower]
+    if suffix:
+        return suffix
+
+    substring = [p for p in stored if needle_lower in p.lower()]
+    if substring:
+        return substring
+
+    return [user_input]
+
+
 def get_recent_conversations(
     *,
-    project: str | None,
+    projects: list[str] | None,
     n_results: int,
     include_shallow: bool,
 ) -> list[dict[str, Any]]:
-    """Return recent conversations for recap, newest first."""
+    """Return recent conversations for recap, newest first.
+
+    ``projects`` should be pre-resolved via ``resolve_project()``.
+    """
     limit = max(1, n_results)
     clauses: list[str] = []
     params: list[Any] = []
-    if project:
-        clauses.append("project = ?")
-        params.append(project)
+    if projects:
+        if len(projects) == 1:
+            clauses.append("project = ?")
+            params.append(projects[0])
+        else:
+            placeholders = ", ".join("?" for _ in projects)
+            clauses.append(f"project IN ({placeholders})")
+            params.extend(projects)
     if not include_shallow:
         clauses.append("depth != 'shallow'")
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""

@@ -146,19 +146,20 @@ def count() -> int:
         return int(row[0]) if row else 0
 
 
-def search(query: str, project: str | None, n: int) -> list[str]:
+def search(query: str, projects: list[str] | None, n: int) -> list[str]:
     match_expr = _fts_match_expression(query)
     if not match_expr:
         return []
     with _lock:
         conn = _get_conn()
         try:
-            if project:
+            if projects:
+                placeholders = ", ".join("?" for _ in projects)
                 sql = (
                     "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "
-                    "AND project = ? ORDER BY bm25(chunks_fts) LIMIT ?"
+                    f"AND project IN ({placeholders}) ORDER BY bm25(chunks_fts) LIMIT ?"
                 )
-                rows = conn.execute(sql, (match_expr, project, n)).fetchall()
+                rows = conn.execute(sql, (match_expr, *projects, n)).fetchall()
             else:
                 sql = (
                     "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "

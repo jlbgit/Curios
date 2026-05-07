@@ -208,14 +208,14 @@ def _meta_matches_search_filters(
     *,
     include_shallow: bool,
     strict: bool,
-    project: str | None,
+    projects: list[str] | None,
     topic: str | None,
 ) -> bool:
     if not include_shallow and meta.get("depth") == "shallow":
         return False
     if strict and meta.get("novelty") == "incremental":
         return False
-    if project and meta.get("project") != project:
+    if projects and meta.get("project") not in projects:
         return False
     if topic and topic in ALL_TOPICS and not meta.get(f"topic_{topic}"):
         return False
@@ -245,6 +245,19 @@ def _ensure_bm25(coll) -> None:
             bm25.insert_many(batch)
 
 
+def _resolve_project(project: str | None) -> list[str] | None:
+    """Resolve user-provided project name to stored name(s). Returns None if no filter."""
+    if not project:
+        return None
+    return sentinels.resolve_project(project)
+
+
+def _chroma_project_condition(resolved: list[str]) -> dict[str, Any]:
+    if len(resolved) == 1:
+        return {"project": {"$eq": resolved[0]}}
+    return {"project": {"$in": resolved}}
+
+
 @mcp.tool()
 def curios_recap(
     project: Annotated[str | None, Field(description="Project name to recap (e.g. 'NEOTEC'). Omit for all projects.")] = None,
@@ -255,8 +268,9 @@ def curios_recap(
 ) -> str:
     """Session recap: most recent conversations for a project, time-ordered. Call at session start to see where you left off."""
     _require_n_results(n_results)
+    resolved = _resolve_project(project)
     cached = sentinels.get_recent_conversations(
-        project=project,
+        projects=resolved,
         n_results=n_results,
         include_shallow=False,
     )
@@ -271,7 +285,7 @@ def curios_recap(
                 indent=2,
             )
             return _wrap(body)
-        return _recap_from_chroma(project, n_results)
+        return _recap_from_chroma(project, resolved, n_results)
 
     out: list[dict[str, Any]] = []
     for row in cached:
@@ -296,11 +310,11 @@ def curios_recap(
     return _wrap(body)
 
 
-def _recap_from_chroma(project: str | None, n_results: int) -> str:
+def _recap_from_chroma(project: str | None, resolved: list[str] | None, n_results: int) -> str:
     coll = _collection()
     where: dict[str, Any] = {"depth": {"$ne": "shallow"}}
-    if project:
-        where = {"$and": [{"project": {"$eq": project}}, where]}
+    if resolved:
+        where = {"$and": [_chroma_project_condition(resolved), where]}
 
     got = _retry_chroma(
         lambda: coll.get(
@@ -377,6 +391,7 @@ def curios_search(
             topic,
             ", ".join(ALL_TOPICS),
         )
+    resolved = _resolve_project(project)
     coll = _collection()
     fetch_n = min(max(n_results * SEARCH_OVERFETCH_FACTOR, SEARCH_FETCH_MIN), SEARCH_FETCH_MAX)
     conds: list[dict[str, Any]] = []
@@ -384,8 +399,8 @@ def curios_search(
         conds.append({"depth": {"$ne": "shallow"}})
     if strict:
         conds.append({"novelty": {"$ne": "incremental"}})
-    if project:
-        conds.append({"project": {"$eq": project}})
+    if resolved:
+        conds.append(_chroma_project_condition(resolved))
     if topic and topic in ALL_TOPICS:
         conds.append({f"topic_{topic}": True})
     where: dict[str, Any] | None = None
@@ -448,7 +463,7 @@ def curios_search(
     sparse_ids: list[str] = []
     if HYBRID_SEARCH_ENABLED:
         _ensure_bm25(coll)
-        sparse_ids = bm25.search(query, project, bm25_n)
+        sparse_ids = bm25.search(query, resolved, bm25_n)
         bm25_only = [cid for cid in sparse_ids if cid not in merged]
         if bm25_only:
             got_sparse = _retry_chroma(
@@ -469,7 +484,7 @@ def curios_search(
                     meta,
                     include_shallow=include_shallow,
                     strict=strict,
-                    project=project,
+                    projects=resolved,
                     topic=topic,
                 ):
                     continue
