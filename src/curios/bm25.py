@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import threading
+from typing import Iterable
 
 from curios.config import BM25_DB_PATH, BM25_MAX_TERMS, CURIOS_DATA
 
@@ -14,6 +15,22 @@ _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
 
 _FTS_SPECIAL_RE = re.compile(r'["*+\-():^]')
+
+_STOPWORDS: frozenset[str] = frozenset(
+    "a an the is are was were be been being have has had do does did "
+    "will would shall should may might can could of in on at to for "
+    "with by from as into through about between after before above "
+    "below it its this that these those i me my we our you your he "
+    "him his she her they them their what which who whom how when "
+    "where why all each every both few more most other some such no "
+    "not only same so than too very just also still already "
+    "el la los las un una unos unas de en por para con sin sobre "
+    "entre al del que es son fue ser estar como más pero ya "
+    "también si no se lo le su sus nos te me".split()
+)
+
+# Exported for server-side distilled query variants (must stay in sync).
+QUERY_STOPWORDS: frozenset[str] = _STOPWORDS
 
 _TABLE_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
@@ -72,7 +89,10 @@ def _fts_match_expression(query: str) -> str:
         return ""
     if len(tokens) == 1:
         return tokens[0]
-    tokens = tokens[:BM25_MAX_TERMS]
+    filtered = [t for t in tokens if t.lower() not in _STOPWORDS]
+    if not filtered:
+        filtered = sanitized.split()[:3]
+    tokens = filtered[:BM25_MAX_TERMS]
     return " OR ".join(tokens)
 
 
@@ -87,14 +107,35 @@ def insert(chunk_id: str, text: str, project: str) -> None:
         conn.commit()
 
 
-def insert_batch(rows: list[tuple[str, str, str]]) -> None:
+def insert_many(rows: list[tuple[str, str, str]]) -> None:
+    """Append rows (replace same chunk_id). Does NOT truncate the FTS table."""
+    if not rows:
+        return
     with _lock:
         conn = _get_conn()
-        conn.execute("DELETE FROM chunks_fts")
+        conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(r[0],) for r in rows])
         conn.executemany(
             "INSERT INTO chunks_fts(chunk_id, text, project) VALUES (?, ?, ?)",
             rows,
         )
+        conn.commit()
+
+
+def delete_many(chunk_ids: Iterable[str]) -> None:
+    ids = list(chunk_ids)
+    if not ids:
+        return
+    with _lock:
+        conn = _get_conn()
+        conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(cid,) for cid in ids])
+        conn.commit()
+
+
+def wipe() -> None:
+    """Drop all FTS rows (used when Chroma schema resets)."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute("DELETE FROM chunks_fts")
         conn.commit()
 
 

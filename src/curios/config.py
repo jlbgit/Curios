@@ -1,9 +1,21 @@
 import base64
 import binascii
+import functools
 import json
 import os
 import re
 from pathlib import Path
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    return int(raw) if raw else default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    return float(raw) if raw else default
+
 
 # ── Paths & directories ─────────────────────────────────────
 # Override via env: CURIOS_CURSOR_HOME, CURIOS_DATA.
@@ -21,13 +33,13 @@ SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"  # tracks DB schema migr
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"        # stdout/stderr from background indexer
 LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"    # timestamp of last successful run
 BM25_DB_PATH = CURIOS_DATA / "bm25.db"            # SQLite FTS5 sparse index
+SENTINELS_DB_PATH = CURIOS_DATA / "sentinels.db"  # per-file index sentinels + recap conversation cache
 
 # ── ChromaDB collections ────────────────────────────────────
 COLLECTION_NAME = "curios"              # main chunk collection (embeddings + metadata)
-SENTINEL_COLLECTION_NAME = "curios_sentinels"  # one record per indexed file (dedup guard)
 
-# Bump to force a full re-index (deletes both collections, rewrites schema_version.json).
-SCHEMA_VERSION = 4
+# Bump to force a full re-index (deletes main collection, wipes bm25/sentinels, rewrites schema_version.json).
+SCHEMA_VERSION = 5
 
 # Indexed topic dimensions (boolean metadata topic_<name> per chunk). Excludes "general".
 ALL_TOPICS: tuple[str, ...] = (
@@ -46,12 +58,16 @@ ALL_TOPICS: tuple[str, ...] = (
 # Smaller → more chunks, finer retrieval granularity, more DB overhead.
 # Larger  → fewer chunks, coarser granularity, less overhead.
 # Sensible range: 400–1500. Default 800 balances granularity vs. context.
-CHUNK_SIZE = 800
+# Override: CURIOS_CHUNK_SIZE.
+CHUNK_SIZE = _env_int("CURIOS_CHUNK_SIZE", 800)
 # Chunks shorter than this (chars) are discarded as noise. Range: 10–100.
 MIN_CHUNK_SIZE = 30
 # Absolute hard cap on any single chunk (chars). Safety guard against
 # pathological inputs. Should be >> CHUNK_SIZE. Default 10 000.
 MAX_CHUNK_CHARS = 10_000
+# Char overlap between consecutive pieces from the hard-cut fallback splitter.
+# Helps embeddings catch cross-boundary content. Sensible range: 5–20% of CHUNK_SIZE.
+CHUNK_HARD_SPLIT_OVERLAP = max(1, CHUNK_SIZE // 10)
 
 # ── Depth classification ────────────────────────────────────
 # Conversations with fewer user messages than this are tagged depth="shallow"
@@ -69,7 +85,8 @@ SHALLOW_THRESHOLD = 2
 # Higher → stricter dedup, fewer incremental tags, more unique chunks kept.
 # Lower  → more aggressive dedup, more chunks marked redundant.
 # Sensible range: 0.85–0.96. Default 0.92.
-NOVELTY_THRESHOLD = 0.92
+# Override: CURIOS_NOVELTY_THRESHOLD.
+NOVELTY_THRESHOLD = _env_float("CURIOS_NOVELTY_THRESHOLD", 0.92)
 # Number of nearest neighbors checked per chunk for the novelty comparison.
 # Higher catches more potential duplicates but slows indexing.
 # Sensible range: 3–15. Default 8.
@@ -116,7 +133,8 @@ MAX_CHUNKS_PER_CONV = 10
 # Distance multiplier applied to decision-tagged chunks when the query
 # itself contains decision-related keywords. < 1.0 boosts, > 1.0 penalises.
 # Sensible range: 0.7–1.0. Default 0.82.
-DECISION_BOOST = 0.82
+# Override: CURIOS_DECISION_BOOST.
+DECISION_BOOST = _env_float("CURIOS_DECISION_BOOST", 0.82)
 # Default max results when MCP caller omits n_results on curios_search.
 # Sensible range: 3–20. Default 5.
 SEARCH_DEFAULT_N_RESULTS = 5
@@ -155,13 +173,20 @@ HYBRID_SEARCH_ENABLED = os.environ.get(
 # Max query tokens sent to FTS5 MATCH. Longer queries are truncated to this
 # many OR-joined terms. Higher → broader sparse recall, risk of noise.
 # Sensible range: 10–40. Default 24.
-BM25_MAX_TERMS = 24
+# Override: CURIOS_BM25_MAX_TERMS.
+BM25_MAX_TERMS = _env_int("CURIOS_BM25_MAX_TERMS", 24)
 # RRF smoothing constant. Lower → top ranks dominate more; higher → flatter
 # rank contribution. Standard IR default is 60. Sensible range: 20–100.
-RRF_K = 60
+# Override: CURIOS_RRF_K.
+RRF_K = _env_int("CURIOS_RRF_K", 60)
 # Number of BM25 results fetched per search. Higher → better sparse recall
 # but more candidates to merge. Sensible range: 20–100. Default 50.
 BM25_FETCH_N = 50
+# When topic / strict / default depth filters are active, BM25_FETCH_N is
+# multiplied by this factor before FTS5 LIMIT. BM25 only filters by project;
+# post-filters drop non-matching chunks — over-fetching keeps sparse signal.
+# Sensible range: 2–6. Default 4.
+BM25_FILTER_OVERFETCH_FACTOR = 4
 
 # ── curios_recap ────────────────────────────────────────────
 # Default max recent conversations returned when caller omits n_results.
@@ -212,6 +237,11 @@ MULTI_QUERY_KW_COUNT = 5
 # Distance metric for HNSW index. "cosine" suits normalised sentence embeddings.
 # Alternatives: "l2", "ip". Changing requires a full re-index.
 CHROMA_HNSW_SPACE = "cosine"
+# Dense embedding model. "default" = Chroma's ONNX all-MiniLM-L6-v2 (unchanged behaviour).
+# Any other value: HuggingFace model id for SentenceTransformerEmbeddingFunction
+# (requires sentence-transformers). Override: CURIOS_EMBEDDING_MODEL.
+# After switching models, bump SCHEMA_VERSION or force a full re-index.
+EMBEDDING_MODEL = (os.environ.get("CURIOS_EMBEDDING_MODEL") or "default").strip() or "default"
 # Retries on transient ChromaDB InternalError (e.g. HNSW race conditions).
 # Sensible range: 1–5. Default 2.
 CHROMA_RETRY_ATTEMPTS = 2
@@ -223,6 +253,18 @@ CHROMA_ITER_BATCH = 2000
 # Batch size for bulk deletes (prune commands).
 # Larger → fewer round-trips. Sensible range: 100–2000. Default 500.
 CHROMA_DELETE_BATCH = 500
+
+
+def get_embedding_function():
+    """Chroma embedding function for indexing and querying (must be identical)."""
+    from chromadb.utils import embedding_functions
+
+    if EMBEDDING_MODEL.lower() == "default":
+        return embedding_functions.DefaultEmbeddingFunction()
+    return embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=EMBEDDING_MODEL,
+    )
+
 
 # ── CLI display (curios-maintain stats/status) ───────────────
 # Character width for horizontal rulers and table formatting.
@@ -275,10 +317,14 @@ FIELD_QUERY_TEMPLATES: dict[str, tuple[str, ...]] = {
 
 # ── Topic keywords ───────────────────────────────────────────
 # Case-insensitive phrases scanned in chunk text for topic scoring.
-# Per-topic hit count is weighted by TOPIC_ROLE_WEIGHTS and compared
-# against TOPIC_MIN_HITS to decide tagging. Includes English + Spanish.
+# English vs Spanish subsets are merged according to KEYWORD_LANGUAGES.
 # Extend per-user via CUSTOM_KEYWORDS_PATH (custom_keywords.json).
-TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
+_kw_lang_raw = (os.environ.get("CURIOS_KEYWORD_LANGUAGES") or "en,es").strip().lower()
+KEYWORD_LANGUAGES: frozenset[str] = frozenset(
+    x.strip() for x in (_kw_lang_raw or "en,es").split(",") if x.strip()
+)
+
+_TOPIC_KW_EN: dict[str, tuple[str, ...]] = {
     "decisions": (
         "decided",
         "chose",
@@ -297,18 +343,9 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "agreed",
         "conclusion",
         "rationale",
-        # Spanish
-        "decidimos",
-        "vamos con",
-        "la decisión",
-        "optamos por",
-        "elegimos",
-        "nos quedamos con",
-        "la opción es",
     ),
     "architecture": (
         "architecture",
-        "arquitectura",
         "design",
         "pattern",
         "module",
@@ -324,13 +361,6 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "pipeline",
         "endpoint",
         "middleware",
-        # Spanish
-        "diseño",
-        "patrón",
-        "módulo",
-        "capa",
-        "estructura",
-        "flujo",
     ),
     "learnings": (
         "according to",
@@ -358,17 +388,6 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "measured",
         "observed that",
         "confirmed that",
-        # Spanish
-        "según",
-        "la investigación",
-        "resulta que",
-        "el análisis muestra",
-        "los datos muestran",
-        "en resumen",
-        "encontré que",
-        "aprendí que",
-        "el resultado",
-        "se confirma",
     ),
     "problems": (
         "bug",
@@ -387,13 +406,6 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "too complex",
         "too complicated",
         "too heavy",
-        # Spanish
-        "no funciona",
-        "falla",
-        "fallo",
-        "causa raíz",
-        "solución alternativa",
-        "demasiado complejo",
     ),
     "preferences": (
         "i prefer",
@@ -421,17 +433,6 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "please avoid",
         "i don't like",
         "i don't want",
-        # Spanish
-        "prefiero",
-        "me gustaría",
-        "por favor no",
-        "por favor evita",
-        "siempre uso",
-        "nunca uses",
-        "mi convención",
-        "mi preferencia",
-        "no me gusta",
-        "nuestro equipo",
     ),
     "ideas": (
         "what if",
@@ -462,16 +463,6 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "down the road",
         "longer term",
         "eventually",
-        # Spanish
-        "qué tal si",
-        "podríamos",
-        "estaría bien",
-        "a futuro",
-        "y si",
-        "otra idea",
-        "una opción",
-        "posible enfoque",
-        "a largo plazo",
     ),
     "open_issues": (
         "todo",
@@ -510,7 +501,73 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "workaround in place",
         "temporary fix",
         "temp fix",
-        # Spanish
+    ),
+    "general": (),
+}
+
+_TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
+    "decisions": (
+        "decidimos",
+        "vamos con",
+        "la decisión",
+        "optamos por",
+        "elegimos",
+        "nos quedamos con",
+        "la opción es",
+    ),
+    "architecture": (
+        "arquitectura",
+        "diseño",
+        "patrón",
+        "módulo",
+        "capa",
+        "estructura",
+        "flujo",
+    ),
+    "learnings": (
+        "según",
+        "la investigación",
+        "resulta que",
+        "el análisis muestra",
+        "los datos muestran",
+        "en resumen",
+        "encontré que",
+        "aprendí que",
+        "el resultado",
+        "se confirma",
+    ),
+    "problems": (
+        "no funciona",
+        "falla",
+        "fallo",
+        "causa raíz",
+        "solución alternativa",
+        "demasiado complejo",
+    ),
+    "preferences": (
+        "prefiero",
+        "me gustaría",
+        "por favor no",
+        "por favor evita",
+        "siempre uso",
+        "nunca uses",
+        "mi convención",
+        "mi preferencia",
+        "no me gusta",
+        "nuestro equipo",
+    ),
+    "ideas": (
+        "qué tal si",
+        "podríamos",
+        "estaría bien",
+        "a futuro",
+        "y si",
+        "otra idea",
+        "una opción",
+        "posible enfoque",
+        "a largo plazo",
+    ),
+    "open_issues": (
         "falta",
         "hace falta",
         "por hacer",
@@ -527,9 +584,24 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "general": (),
 }
 
+TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {}
+for _topic in (*ALL_TOPICS, "general"):
+    _merged_kw: list[str] = []
+    if "en" in KEYWORD_LANGUAGES:
+        _merged_kw.extend(_TOPIC_KW_EN.get(_topic, ()))
+    if "es" in KEYWORD_LANGUAGES:
+        _merged_kw.extend(_TOPIC_KW_ES.get(_topic, ()))
+    TOPIC_KEYWORDS[_topic] = tuple(_merged_kw)
 
+
+@functools.lru_cache(maxsize=1)
 def get_topic_keywords() -> dict[str, tuple[str, ...]]:
-    """Merge default TOPIC_KEYWORDS with user-specific custom_keywords.json."""
+    """Merge default TOPIC_KEYWORDS with user-specific custom_keywords.json.
+
+    Cached for the process lifetime. After editing custom_keywords.json, restart
+    the Curios MCP server to pick up changes; the short-lived indexer always
+    starts fresh and sees the latest file.
+    """
     if not CUSTOM_KEYWORDS_PATH.exists():
         return TOPIC_KEYWORDS
     try:
@@ -545,6 +617,27 @@ def get_topic_keywords() -> dict[str, tuple[str, ...]]:
         new = tuple(k for k in extras if k.lower() not in existing)
         merged[topic] = defaults + new
     return merged
+
+
+def _keyword_boundary_pattern(keyword: str) -> re.Pattern[str]:
+    """Word-boundary match; omits \\b where the phrase starts/ends with punctuation."""
+    k = keyword.strip()
+    pre = r"\b" if k[:1].isalnum() or k[:1] == "_" else ""
+    post = r"\b" if k[-1:].isalnum() or k[-1:] == "_" else ""
+    return re.compile(rf"{pre}{re.escape(k)}{post}", re.IGNORECASE | re.UNICODE)
+
+
+@functools.lru_cache(maxsize=1)
+def get_compiled_topic_patterns() -> dict[str, tuple[re.Pattern[str], ...]]:
+    """Per-topic compiled regexes for word-boundary keyword hits.
+
+    Cached with get_topic_keywords(); restart MCP after custom_keywords.json edits.
+    """
+    kws = get_topic_keywords()
+    return {
+        topic: tuple(_keyword_boundary_pattern(k) for k in keys if k.strip())
+        for topic, keys in kws.items()
+    }
 
 
 def get_project_overrides() -> dict[str, str]:
@@ -589,13 +682,52 @@ def project_name_from_import_slug(slug: str) -> str | None:
 # ── Secret redaction ─────────────────────────────────────────
 # Regex patterns applied to all chunk text before indexing. Matches are
 # replaced with "[REDACTED]" to prevent secrets leaking into the DB.
+# Order matters: list more specific patterns before broad ones (e.g. sk-ant- before sk-).
 REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sk-ant-[a-zA-Z0-9\-]{20,}"), "[REDACTED]"),
     (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "[REDACTED]"),
     (re.compile(r"AKIA[A-Z0-9]{16}"), "[REDACTED]"),
+    (re.compile(
+        r"(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*[A-Za-z0-9/+=]{40}"
+    ), "[REDACTED]"),
     (re.compile(r"ghp_[a-zA-Z0-9]{36}"), "[REDACTED]"),
-    (re.compile(r"password\s*[:=]\s*\S+", re.I), "[REDACTED]"),
-    (re.compile(r"secret\s*[:=]\s*\S+", re.I), "[REDACTED]"),
-    (re.compile(r"token\s*[:=]\s*\S+", re.I), "[REDACTED]"),
+    (re.compile(r"github_pat_[a-zA-Z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"glpat-[a-zA-Z0-9\-_]{20,}"), "[REDACTED]"),
+    (re.compile(r"xox[bpas]-[a-zA-Z0-9\-]{10,}"), "[REDACTED]"),
+    (re.compile(r"AIza[a-zA-Z0-9_\-]{35}"), "[REDACTED]"),
+    (re.compile(
+        r"eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}"
+    ), "[REDACTED]"),
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
+            r"-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+        ),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(r"(?:AccountKey|SharedAccessKey|sig)=[A-Za-z0-9/+=]{20,}", re.I),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)heroku[a-zA-Z_]*[:=]\s*[0-9a-f\-]{36}"),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(
+            r"(?:password|secret|token|api_key)\s*(?:is|was|will be|:)\s*[\"']?\S+[\"']?",
+            re.I,
+        ),
+        "[REDACTED]",
+    ),
+    (re.compile(
+        r"(?:password|secret|token|api_key|apikey|private_key)\s*[:=]\s*\S+",
+        re.I,
+    ), "[REDACTED]"),
+    (re.compile(
+        r"^[A-Z_]*(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|API_KEY)[A-Z_]*\s*=\s*\S+",
+        re.I | re.M,
+    ), "[REDACTED]"),
 )
 
 
@@ -640,7 +772,12 @@ def extract_project_name(transcript_path: Path) -> str:
     meaningful = [s for s in segments if s.lower() not in skip and not s.isdigit()]
     if not meaningful:
         meaningful = [s for s in segments if not s.isdigit()] or segments
-    pick = meaningful[-1]
+    if len(meaningful) > 2:
+        pick = "/".join(meaningful[-2:])
+    elif meaningful:
+        pick = meaningful[-1]
+    else:
+        pick = slug
     return pick.upper() if pick.islower() and len(pick) <= 4 else pick
 
 

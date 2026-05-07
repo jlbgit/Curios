@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.5.1 — 2026-05-07
+
+### Maintenance & MCP hygiene
+- **Prune commands:** `--shallow`, `--stale`, and `--project … --before` now delete matching BM25 rows and remove stale SQLite `sentinels` / `conversations` recap rows (no orphaned FTS or recap entries).
+- **`build-bm25`:** runs under `index_lock()` with `bm25.wipe()` then `insert_many`; removed truncating `bm25.insert_batch`.
+- **MCP output:** search/related result field renamed from `distance` to `score` (higher = better); eval/smoke scripts updated accordingly.
+- **Indexer:** recap `topics` string is built from the same redacted per-exchange topic passes as chunk metadata (removed `_conversation_topics_label`); continuation chunks prepend a short **User (asked):** preamble plus **Assistant (cont.):**.
+- **Server:** `_topics_display` returns `"general"` when no topic booleans are set; unknown `topic` argument logs a warning; `n_results` clamped to 1–50 (`Field` + runtime `_require_n_results`).
+- **Tests:** `tests/test_prune_cleanup.py`, `test_mcp_output.py`, `test_indexer_dedup.py`, `test_continuation_chunks.py`, `test_hygiene.py`; integration tests resolve `CURIOS_EVAL_PROJECTS` names against actual indexed `project` metadata.
+
+## 0.5.0 — 2026-05-07
+
+Major correctness, performance, and robustness pass driven by a full RAG pipeline audit. Schema bumped to v5; requires reindex (`curios-maintain reindex`).
+
+### Bug fixes (A1–A8)
+- **`cmd_stats` / `cmd_verify` topic distribution:** fixed — reads `topic_<name>` booleans via `_topic_names()` instead of non-existent `"topics"` string field; `cmd_verify` no longer checks removed per-chunk `schema_version`.
+- **`--force` re-index orphan chunks:** new `_delete_existing_conversation()` deletes all prior chunks (Chroma + BM25) before re-writing when `force=True`.
+- **Schema bump BM25 inconsistency:** `_ensure_schema` now also calls `bm25.wipe()` and `sentinels.wipe()` on schema reset — no more stale FTS5 rows after a version bump.
+- **`_ensure_bm25` concurrency:** bootstrap uses additive `insert_many` (not truncating `insert_batch`), runs under `index_lock()` with a double `bm25.count()` check so server bootstrap can't race with the indexer.
+- **Substring keyword matching (false positives):** `_keyword_hits` now takes compiled word-boundary regex patterns via `get_compiled_topic_patterns()`. "fix" no longer matches "prefix".
+- **`get_topic_keywords()` disk re-reads:** both `get_topic_keywords()` and `get_compiled_topic_patterns()` are `@lru_cache(maxsize=1)`.
+- **Continuation chunks lost role context:** chunks 2..N of a split assistant turn now start with `"Assistant (cont.):\n"`; hard-split fallback adds `CHUNK_HARD_SPLIT_OVERLAP` (~10% of `CHUNK_SIZE`) overlap.
+- **Multi-query dense ranking fused incorrectly:** each query variant now produces its own ranked list; `_rrf_fuse(*variant_ranks, sparse_ids)` fuses them independently instead of collapsing to "best distance across all variants".
+
+### Performance (B1–B3)
+- **Batched indexing:** `_novelty_labels` (one `coll.query` for all chunks), single `coll.upsert(ids=..., docs=..., metas=...)`, and `bm25.insert_many()` per file — eliminates per-chunk round-trips.
+- **Paged iteration:** `_ensure_bm25` and `cmd_build_bm25` scan via `_iter_collection()` / `_iter_all_metadatas()` in pages of `CHROMA_ITER_BATCH` (2000) instead of materialising the entire collection.
+
+### Score / fusion correctness (C1–C4)
+- **RRF scoring cleaned up:** removed the `pseudo = 1/(rrf + 1e-9)` inversion; sorting is now by descending score directly.
+- **BM25-only candidates:** use `None` sentinel distance with explicit branching (was `1e9`).
+- **`_chunk_row_key` dead fallback:** reduced to `return doc_id`.
+- **Decision boost on RRF:** applied as `score /= DECISION_BOOST` on the fused RRF score.
+
+### Architecture (D1–D11)
+- **Configurable embedding model (D1):** `CURIOS_EMBEDDING_MODEL` env var; `get_embedding_function()` supports any SentenceTransformer model id. Default unchanged (`all-MiniLM-L6-v2`).
+- **Sentinel collection → SQLite (D3):** new `src/curios/sentinels.py` with tables `sentinels` (per-file index state) and `conversations` (recap cache). Eliminates HNSW cost for sentinel lookups.
+- **Schema version simplified (D4):** per-chunk `schema_version` metadata removed; only `schema_version.json` + SQLite sentinel remain.
+- **`discover_transcripts` warns on empty match (D6):** `log.warning` when `TRANSCRIPTS_BASE` is non-empty but no transcripts match known glob patterns.
+- **Secret redaction broadened (D7):** added `sk-ant-*`, `github_pat_*`, `glpat-*`, `xox[bpas]-*`, `AIza*`, JWT, AWS secret keys, PEM private key blocks, Azure connection strings, Heroku API keys, `.env`-style `KEY=VALUE`, prose-style `password is "..."`.
+- **Multi-query for all searches (D8):** long queries (> 3 words) always get a distilled stopword-stripped variant even without a topic filter. Topic templates and keyword augmentation still fire when a topic is set.
+- **`curios_recap` O(K log K) (D9):** recap served from SQLite `conversations` table; falls back to ChromaDB scan only when cache is empty. Preview now picks the first user message > 40 chars.
+- **`curios_related` RRF fusion (D10):** per-probe ranked lists are fused via `_rrf_fuse` instead of collapsing to minimum distance per conversation.
+- **MCP local-only warning (D11):** README documents that MCP is stdio-only with no auth.
+- **BM25 sparse over-fetch (A9 partial):** `BM25_FILTER_OVERFETCH_FACTOR = 4` widens sparse fetch when topic/strict/depth filters are active.
+- **Project name extraction improved (D5 partial):** returns last 2 meaningful path segments; logs resolved project slug once per project.
+
+### Config & ablation (E, F)
+- **Env-var overrides:** `CURIOS_CHUNK_SIZE`, `CURIOS_NOVELTY_THRESHOLD`, `CURIOS_DECISION_BOOST`, `CURIOS_BM25_MAX_TERMS`, `CURIOS_RRF_K` for parameter sweeps.
+- **Keyword language hint:** `CURIOS_KEYWORD_LANGUAGES` (default `en,es`) — set to `en` to disable Spanish keywords for English-only corpora.
+- **`_retry_chroma` broadened:** also retries on `sqlite3.OperationalError` (file-lock contention).
+- **`_session_hook`:** removed redundant `env=os.environ.copy()`; uses `with open` context manager.
+- **BM25 stopword filter:** common English/Spanish stopwords stripped before `BM25_MAX_TERMS` truncation; `QUERY_STOPWORDS` exported for use by distilled multi-query.
+
+### Internal / maintenance
+- **`bm25.py` new functions:** `insert_many` (additive, no truncate), `delete_many`, `wipe`.
+- **Schema bumped to v5:** triggers full reindex; clears Chroma + BM25 + sentinels on upgrade.
+- **`SENTINEL_COLLECTION_NAME` removed:** all references to the ChromaDB sentinel collection deleted.
+- **Tests:** `tests/test_d3_d11.py` (sentinels, redaction, discover), `tests/test_remaining_fixes.py` (retry, stopwords, lock, multi-query, RRF, env overrides, language hint, redaction).
+
 ## 0.4.5 — 2026-05-06
 
 - **Hybrid BM25 + vector search (RRF fusion):** `curios_search` now runs a parallel SQLite FTS5 sparse retrieval path alongside ChromaDB dense ANN search and fuses both ranked lists via Reciprocal Rank Fusion (RRF, `k=60`). Zero new dependencies — uses stdlib `sqlite3`. BM25 sidecar stored at `~/.local/share/curios/bm25.db` (~5–25 KB for typical corpora). Fast mode A/B eval on Mempalace (decisions topic): **answer relevancy +0.14**, contextual recall **+0.11** hybrid ON vs OFF.

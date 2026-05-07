@@ -16,8 +16,9 @@ from typing import Any
 
 import chromadb
 
-from curios import bm25
+from curios import bm25, sentinels
 from curios.config import (
+    ALL_TOPICS,
     BM25_DB_PATH,
     CHROMA_DELETE_BATCH,
     CHROMA_ITER_BATCH,
@@ -27,14 +28,13 @@ from curios.config import (
     COLLECTION_NAME,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
-    SENTINEL_COLLECTION_NAME,
     SHALLOW_THRESHOLD,
     TRANSCRIPTS_BASE,
     conversation_id_from_path,
     extract_project_name,
     import_slug_for_project,
 )
-from curios.indexer import discover_transcripts, run_index
+from curios.indexer import discover_transcripts, index_lock, run_index
 
 _W = CLI_RULER_WIDTH
 _MAX_LIST = CLI_MAX_LIST_ITEMS
@@ -226,21 +226,18 @@ def _db_size_bytes() -> int:
 def cmd_build_bm25() -> int:
     """(Re)build BM25 FTS5 index from existing ChromaDB data."""
     coll = _get_coll(COLLECTION_NAME)
-    total = coll.count()
-    if total == 0:
-        print("no chunks in ChromaDB", file=sys.stderr)
-        return 1
-    all_data = coll.get(include=["documents", "metadatas"], limit=total)
-    ids = all_data.get("ids") or []
-    docs = all_data.get("documents") or []
-    metas = all_data.get("metadatas") or []
     rows: list[tuple[str, str, str]] = []
-    for cid, doc, meta in zip(ids, docs, metas):
+    for mid, meta, doc in _iter_all_metadatas(coll):
         if not meta:
             continue
         proj = str(meta.get("project") or "unknown")
-        rows.append((str(cid), doc or "", proj))
-    bm25.insert_batch(rows)
+        rows.append((str(mid), doc or "", proj))
+    if not rows:
+        print("no chunks in ChromaDB", file=sys.stderr)
+        return 1
+    with index_lock():
+        bm25.wipe()
+        bm25.insert_many(rows)
     print(f"Built BM25 index: {len(rows)} chunks → {BM25_DB_PATH}")
     return 0
 
@@ -282,6 +279,10 @@ class StatsResult:
     conversations: dict[tuple[str, str], ConvRecord]
 
 
+def _topic_names(meta: dict[str, Any]) -> list[str]:
+    return [t for t in ALL_TOPICS if meta.get(f"topic_{t}")]
+
+
 def _collect_stats() -> StatsResult:
     coll = _get_coll(COLLECTION_NAME)
     total_chunks = 0
@@ -304,10 +305,14 @@ def _collect_stats() -> StatsResult:
         nov = str(meta.get("novelty") or "?")
         doc_chars = len(doc or "")
 
-        for t in str(meta.get("topics") or "general").split(","):
-            t = t.strip() or "general"
-            topics[t] += 1
-            by_project[proj].topics[t] += 1
+        tagged = _topic_names(meta)
+        if tagged:
+            for t in tagged:
+                topics[t] += 1
+                by_project[proj].topics[t] += 1
+        else:
+            topics["general"] += 1
+            by_project[proj].topics["general"] += 1
 
         novelty[nov] += 1
         depth[dep] += 1
@@ -568,7 +573,7 @@ def cmd_verify() -> int:
         print("warning: chromadb path not owner-only", oct(mode & 0o777))
         issues += 1
     coll = _get_coll(COLLECTION_NAME)
-    required = {"project", "conversation_id", "topics", "depth", "novelty", "schema_version"}
+    required = {"project", "conversation_id", "depth", "novelty"}
     for mid, meta, _ in _iter_all_metadatas(coll):
         if not meta:
             print("missing metadata", mid)
@@ -577,13 +582,6 @@ def cmd_verify() -> int:
         missing = required - set(meta.keys())
         if missing:
             print("chunk", mid, "missing fields", missing)
-            issues += 1
-        try:
-            sv = int(meta.get("schema_version", -1))
-            if sv != SCHEMA_VERSION:
-                print("chunk", mid, "schema_version", sv, "expected", SCHEMA_VERSION)
-                issues += 1
-        except (TypeError, ValueError):
             issues += 1
         rel = meta.get("source_rel_path")
         if rel:
@@ -608,11 +606,10 @@ def cmd_reindex(project: str | None) -> int:
     if not _confirm(f"This will delete the Curios index and rebuild from transcripts ({scope})."):
         return 1
     client = _client()
-    for name in (COLLECTION_NAME, SENTINEL_COLLECTION_NAME):
-        try:
-            client.delete_collection(name)
-        except Exception:
-            pass
+    try:
+        client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
     try:
         SCHEMA_STATE_PATH.unlink()
     except OSError:
@@ -633,7 +630,22 @@ def cmd_prune_shallow() -> int:
     if not _confirm("Delete all chunks with depth=shallow permanently?"):
         return 1
     coll = _get_coll(COLLECTION_NAME)
-    coll.delete(where={"depth": {"$eq": "shallow"}})
+    ids: list[str] = []
+    conv_ids: set[str] = set()
+    for mid, meta, _ in _iter_all_metadatas(coll):
+        if not meta:
+            continue
+        if meta.get("depth") == "shallow":
+            ids.append(mid)
+            cid = str(meta.get("conversation_id") or "")
+            if cid:
+                conv_ids.add(cid)
+    for i in range(0, len(ids), CHROMA_DELETE_BATCH):
+        batch = ids[i : i + CHROMA_DELETE_BATCH]
+        if batch:
+            bm25.delete_many(batch)
+            coll.delete(ids=batch)
+    sentinels.delete_conversations(list(conv_ids))
     print("done")
     return 0
 
@@ -644,6 +656,7 @@ def cmd_prune_project_before(project: str, before: str) -> int:
     cutoff = int(datetime.fromisoformat(before).timestamp())
     coll = _get_coll(COLLECTION_NAME)
     to_delete: list[str] = []
+    conv_ids: set[str] = set()
     for mid, meta, _ in _iter_all_metadatas(coll):
         if not meta:
             continue
@@ -655,10 +668,15 @@ def cmd_prune_project_before(project: str, before: str) -> int:
             continue
         if m < cutoff:
             to_delete.append(mid)
+            cid = str(meta.get("conversation_id") or "")
+            if cid:
+                conv_ids.add(cid)
     for i in range(0, len(to_delete), CHROMA_DELETE_BATCH):
         batch = to_delete[i : i + CHROMA_DELETE_BATCH]
         if batch:
+            bm25.delete_many(batch)
             coll.delete(ids=batch)
+    sentinels.delete_conversations(list(conv_ids))
     print("deleted", len(to_delete))
     return 0
 
@@ -668,6 +686,8 @@ def cmd_prune_stale() -> int:
         return 1
     coll = _get_coll(COLLECTION_NAME)
     to_delete: list[str] = []
+    abs_paths: set[str] = set()
+    conv_ids: set[str] = set()
     for mid, meta, _ in _iter_all_metadatas(coll):
         rel = (meta or {}).get("source_rel_path")
         if not rel:
@@ -675,10 +695,18 @@ def cmd_prune_stale() -> int:
         p = TRANSCRIPTS_BASE / str(rel)
         if not p.is_file():
             to_delete.append(mid)
+            abs_paths.add(str(p.resolve()))
+            cid = str((meta or {}).get("conversation_id") or "")
+            if cid:
+                conv_ids.add(cid)
     for i in range(0, len(to_delete), CHROMA_DELETE_BATCH):
         batch = to_delete[i : i + CHROMA_DELETE_BATCH]
         if batch:
+            bm25.delete_many(batch)
             coll.delete(ids=batch)
+    for ap in abs_paths:
+        sentinels.delete_sentinel(ap)
+    sentinels.delete_conversations(list(conv_ids))
     print("deleted", len(to_delete))
     return 0
 
