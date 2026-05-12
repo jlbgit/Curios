@@ -26,6 +26,8 @@ from curios.config import (
     CLI_MAX_LIST_ITEMS,
     CLI_RULER_WIDTH,
     COLLECTION_NAME,
+    INDEX_LOG_PATH,
+    LAST_INDEXED_PATH,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
     SHALLOW_THRESHOLD,
@@ -34,7 +36,7 @@ from curios.config import (
     extract_project_name,
     import_slug_for_project,
 )
-from curios.indexer import discover_transcripts, index_lock, run_index
+from curios.indexer import PENDING_QUEUE_PATH, discover_transcripts, index_lock, run_index
 
 _W = CLI_RULER_WIDTH
 _MAX_LIST = CLI_MAX_LIST_ITEMS
@@ -221,6 +223,77 @@ def _db_size_bytes() -> int:
             except OSError:
                 pass
     return size
+
+
+@dataclass
+class IndexHealth:
+    last_indexed_at: int = 0
+    last_files_done: int = 0
+    last_chunks_written: int = 0
+    total_transcripts: int = 0
+    unindexed_count: int = 0
+    pending_queue_count: int = 0
+    recent_errors: list[str] = field(default_factory=list)
+
+
+def _collect_index_health() -> IndexHealth:
+    h = IndexHealth()
+    if LAST_INDEXED_PATH.is_file():
+        try:
+            data = json.loads(LAST_INDEXED_PATH.read_text())
+            h.last_indexed_at = int(data.get("indexed_at", 0))
+            h.last_files_done = int(data.get("files_done", 0))
+            h.last_chunks_written = int(data.get("chunks_written", 0))
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+
+    all_paths = discover_transcripts()
+    h.total_transcripts = len(all_paths)
+    h.unindexed_count = sum(
+        1 for p in all_paths
+        if not sentinels.is_indexed(str(p.resolve()), SCHEMA_VERSION)
+    )
+
+    if PENDING_QUEUE_PATH.is_file():
+        try:
+            lines = PENDING_QUEUE_PATH.read_text().splitlines()
+            h.pending_queue_count = sum(1 for ln in lines if ln.strip())
+        except OSError:
+            pass
+
+    if INDEX_LOG_PATH.is_file():
+        try:
+            raw = INDEX_LOG_PATH.read_text()
+            for line in raw.splitlines()[-30:]:
+                low = line.lower()
+                if "error" in low or "traceback" in low or "warning" in low:
+                    h.recent_errors.append(line.rstrip())
+        except OSError:
+            pass
+        h.recent_errors = h.recent_errors[-5:]
+
+    return h
+
+
+def _print_index_health(h: IndexHealth, verbose: bool = False) -> None:
+    if h.last_indexed_at:
+        print(f"  Last run   : {_fmt_date(h.last_indexed_at)}"
+              f"  ({h.last_files_done} files, {h.last_chunks_written} chunks)")
+    else:
+        print("  Last run   : never recorded")
+
+    indexed = h.total_transcripts - h.unindexed_count
+    status = "OK" if h.unindexed_count == 0 else f"{h.unindexed_count} UNINDEXED"
+    print(f"  Transcripts: {indexed}/{h.total_transcripts} indexed  [{status}]")
+
+    if h.pending_queue_count:
+        print(f"  Queue      : {h.pending_queue_count} file(s) pending")
+
+    if h.recent_errors:
+        print(f"  Errors     : {len(h.recent_errors)} recent issue(s) in index.log")
+        if verbose:
+            for err in h.recent_errors:
+                print(f"    {err}")
 
 
 def cmd_build_bm25() -> int:
@@ -441,6 +514,9 @@ def cmd_status() -> int:
     print(f"Depth   : {standard_pct} standard  /  {shallow_pct} shallow")
     print(f"Novelty : {novel_pct} novel  /  {incremental_pct} incremental")
     print(f"Updated : {_fmt_date(s.last_mtime)}")
+    print()
+    h = _collect_index_health()
+    _print_index_health(h, verbose=True)
     return 0
 
 
@@ -475,6 +551,12 @@ def cmd_stats() -> int:
         f"Conversations: {total_convs:,}   "
         f"Projects: {len(s.by_project)}"
     )
+    print()
+
+    # ── indexing health ───────────────────────────────────────
+    print(_hr("INDEXING HEALTH"))
+    h = _collect_index_health()
+    _print_index_health(h, verbose=True)
     print()
 
     # ── depth ────────────────────────────────────────────────
