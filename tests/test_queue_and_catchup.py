@@ -8,13 +8,14 @@ from __future__ import annotations
 import io
 import json
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from curios import bm25, sentinels
-from tests.conftest import patch_curios_roots, reset_server_globals
+from curios import sentinels
+from tests.conftest import patch_curios_roots
+
+pytestmark = pytest.mark.indexing
 
 
 # ── queue_for_indexing / drain_pending_queue ─────────────────

@@ -8,33 +8,21 @@ test_integration.py (synthetic index). This module only keeps:
 - Concurrent curios_search calls (race / stability check)
 
 Needs populated Chroma (CURIOS_DATA) only; no tests/eval/.env required.
-Default pytest addopts exclude @pytest.mark.live — pass -m live on the CLI.
 
 Usage:
-    uv run pytest tests/test_mcp_interactions.py -m live -v
-
-Together with token savings live test:
-    uv run pytest tests/test_mcp_interactions.py tests/test_token_savings.py -m live -v
+    uv run pytest -m live -v
 """
 
 from __future__ import annotations
 
-import json
 import threading
 import time
-from typing import Any
 
 import pytest
 
 from curios.config import CHROMADB_PATH, COLLECTION_NAME
 from curios.server import curios_recap, curios_search
-
-
-def _parse(raw: str) -> dict[str, Any]:
-    inner = (
-        raw.replace("[CURIOS RESULT]", "").replace("[/CURIOS RESULT]", "").strip()
-    )
-    return json.loads(inner)
+from tests.conftest import unwrap_curios_result
 
 
 @pytest.fixture(scope="module")
@@ -56,13 +44,13 @@ def db_populated():
 class TestLiveSmoke:
     def test_search_and_recap_against_real_index(self, db_populated):
         raw_search = curios_search(query="architecture decisions", n_results=3)
-        search_data = _parse(raw_search)
+        search_data = unwrap_curios_result(raw_search)
         assert "by_project" in search_data
         total = sum(len(v) for v in search_data["by_project"].values())
         assert total > 0
 
         raw_recap = curios_recap(n_results=3)
-        recap_data = _parse(raw_recap)
+        recap_data = unwrap_curios_result(raw_recap)
         assert recap_data.get("recap_project") == "(all)"
         assert len(recap_data.get("recent_conversations") or []) > 0
 

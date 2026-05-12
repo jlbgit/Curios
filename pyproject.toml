@@ -37,11 +37,19 @@ Changelog = "https://github.com/jlbgit/Curios/blob/main/CHANGELOG.md"
 # deepeval's pytest plugin buffers all output for its cloud dashboard,
 # producing no visible progress during long eval runs. Disable it globally
 # since we don't use the Confident AI integration.
-addopts = "-p no:deepeval -m \"not live\""
-pythonpath = ["tests/eval", "src"]
+# --ignore=tests/eval: eval pipeline is optional (requires deepeval + API keys)
+# Live tests auto-skip when prerequisites (CURIOS_DATA, env vars) are missing.
+addopts = "-p no:deepeval --ignore=tests/eval"
+pythonpath = ["src"]
 markers = [
-    "benchmark: live-DB token benchmark (optional; requires index + tests/eval/.env)",
-    "live: uses real CURIOS_DATA index (+ transcripts for token benchmark); run with pytest -m live",
+    "config: configuration, redaction, slugs, keywords, env overrides",
+    "indexing: transcript parsing, chunking, topics, discovery, queue, catch-up",
+    "storage: BM25 FTS5 and sentinels SQLite databases",
+    "server: MCP server retrieval helpers and tool handlers",
+    "integration: end-to-end synthetic indexing and search",
+    "maintenance: prune, build-bm25, status/stats/verify",
+    "live: uses real CURIOS_DATA index; run with pytest -m live",
+    "benchmark: live-DB token benchmark (subset of live)",
 ]
 
 [build-system]

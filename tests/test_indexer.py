@@ -22,7 +22,9 @@ from curios.indexer import (
     discover_transcripts,
     run_index,
 )
-from tests.conftest import patch_curios_roots, topic_meta_false
+from tests.conftest import patch_curios_roots
+
+pytestmark = pytest.mark.indexing
 
 
 def test_conversation_topics_label_removed():
@@ -190,26 +192,9 @@ def test_recap_preview_for_index():
     assert "y" * 40 in prev or len(prev) == 600
 
 
-def test_indexed_conversation_topics_match_chunk_union(monkeypatch, tmp_path):
-    data = tmp_path / "data"
-    chroma_path = data / "chromadb"
-    proj = tmp_path / "projects" / "my-proj" / "agent-transcripts"
+def test_indexed_conversation_topics_match_chunk_union(curios_data_env):
+    proj = curios_data_env / "projects" / "my-proj" / "agent-transcripts"
     proj.mkdir(parents=True)
-    monkeypatch.setattr("curios.config.CURIOS_DATA", data)
-    monkeypatch.setattr("curios.config.CHROMADB_PATH", chroma_path)
-    monkeypatch.setattr("curios.config.BM25_DB_PATH", data / "bm25.db")
-    monkeypatch.setattr("curios.config.SENTINELS_DB_PATH", data / "sentinels.db")
-    monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", tmp_path / "projects")
-    monkeypatch.setattr("curios.config.SCHEMA_STATE_PATH", data / "schema_version.json")
-    monkeypatch.setattr("curios.config.LOCK_PATH", data / ".index.lock")
-    monkeypatch.setattr("curios.bm25.BM25_DB_PATH", data / "bm25.db")
-    monkeypatch.setattr("curios.sentinels.SENTINELS_DB_PATH", data / "sentinels.db")
-    monkeypatch.setattr("curios.indexer.CURIOS_DATA", data)
-    monkeypatch.setattr("curios.indexer.LOCK_PATH", data / ".index.lock")
-    monkeypatch.setattr("curios.indexer.CHROMADB_PATH", chroma_path)
-    monkeypatch.setattr("curios.indexer.SCHEMA_STATE_PATH", data / "schema_version.json")
-    bm25.close_connection()
-    sentinels.close_connection()
 
     cid = str(uuid.uuid4())
     tr = proj / f"{cid}.jsonl"

@@ -11,12 +11,9 @@ import pytest
 
 from curios.indexer import run_index
 from curios.server import curios_recap, curios_related, curios_search
-from tests.conftest import patch_curios_roots, reset_server_globals
+from tests.conftest import patch_curios_roots, reset_server_globals, unwrap_curios_result
 
-
-def _unwrap(raw: str) -> dict:
-    inner = raw.replace("[CURIOS RESULT]", "").replace("[/CURIOS RESULT]", "").strip()
-    return json.loads(inner)
+pytestmark = pytest.mark.integration
 
 
 def _write_conv(agent_dir: Path, body_user: str, body_asst: str) -> str:
@@ -69,7 +66,7 @@ def test_search_recap_related_end_to_end(indexed_pair, monkeypatch):
     monkeypatch.setattr("curios.server.HYBRID_SEARCH_ENABLED", False)
 
     raw_search = curios_search(query="PostgreSQL database decision", n_results=5)
-    data = _unwrap(raw_search)
+    data = unwrap_curios_result(raw_search)
     assert "by_project" in data
     total = sum(len(v) for v in data["by_project"].values())
     assert total >= 1
@@ -77,14 +74,14 @@ def test_search_recap_related_end_to_end(indexed_pair, monkeypatch):
     assert all("score" in r and "conversation_id" in r for r in flat)
 
     raw_recap = curios_recap(n_results=10)
-    recap = _unwrap(raw_recap)
+    recap = unwrap_curios_result(raw_recap)
     assert recap["recap_project"] == "(all)"
     assert len(recap["recent_conversations"]) >= 1
     cids = {c["conversation_id"] for c in recap["recent_conversations"]}
     assert indexed_pair["cid_a"] in cids or indexed_pair["cid_b"] in cids
 
     raw_rel = curios_related(conversation_id=indexed_pair["cid_a"], n_results=5)
-    rel = _unwrap(raw_rel)
+    rel = unwrap_curios_result(raw_rel)
     assert rel["source_conversation"] == indexed_pair["cid_a"]
     assert "related_by_project" in rel
 
@@ -93,7 +90,7 @@ def test_search_project_scoped(indexed_pair, monkeypatch):
     monkeypatch.setattr("curios.server.HYBRID_SEARCH_ENABLED", False)
     proj = indexed_pair["proj_a"]
     raw = curios_search(query="PostgreSQL", project=proj, n_results=5)
-    data = _unwrap(raw)
+    data = unwrap_curios_result(raw)
     assert "results" in data
     for r in data["results"]:
         assert r["project"] == proj

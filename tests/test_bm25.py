@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from curios import bm25
-from tests.conftest import patch_curios_roots
+
+pytestmark = pytest.mark.storage
 
 
 def test_fts_match_expression_filters_stopwords():
@@ -30,22 +31,14 @@ def test_sanitize_fts_query_strips_operators():
     assert "foo" in out.lower() and "bar" in out.lower()
 
 
-@pytest.fixture
-def bm25_env(monkeypatch, tmp_path):
-    patch_curios_roots(monkeypatch, tmp_path)
-    bm25.wipe()
-    yield tmp_path
-    bm25.close_connection()
-
-
-def test_insert_search_count(bm25_env):
+def test_insert_search_count(curios_data_env):
     bm25.insert("c1", "alpha beta gamma", "P1")
     assert bm25.count() == 1
     assert "c1" in bm25.search("alpha", ["P1"], 5)
     assert bm25.search("alpha", ["Other"], 5) == []
 
 
-def test_insert_many_replace_same_id(bm25_env):
+def test_insert_many_replace_same_id(curios_data_env):
     bm25.insert_many([("c1", "first", "P"), ("c2", "second", "P")])
     assert bm25.count() == 2
     bm25.insert_many([("c1", "replaced text", "P")])
@@ -53,20 +46,20 @@ def test_insert_many_replace_same_id(bm25_env):
     assert bm25.search("replaced", ["P"], 5) == ["c1"]
 
 
-def test_delete_many(bm25_env):
+def test_delete_many(curios_data_env):
     bm25.insert_many([("a", "x", "P"), ("b", "y", "P")])
     bm25.delete_many(["a"])
     assert bm25.count() == 1
     assert bm25.search("x", ["P"], 5) == []
 
 
-def test_search_without_project(bm25_env):
+def test_search_without_project(curios_data_env):
     bm25.insert("z1", "uniquewordxyz", "Q")
     ids = bm25.search("uniquewordxyz", None, 10)
     assert "z1" in ids
 
 
-def test_wipe_clears_table(bm25_env):
+def test_wipe_clears_table(curios_data_env):
     bm25.insert("k", "text", "P")
     assert bm25.count() == 1
     bm25.wipe()

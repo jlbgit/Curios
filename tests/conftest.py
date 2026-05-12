@@ -1,8 +1,10 @@
-"""Shared pytest fixtures for Curios tests."""
+"""Shared pytest fixtures and helpers for Curios tests."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import chromadb
 import pytest
@@ -13,6 +15,12 @@ from curios.config import ALL_TOPICS, CHROMA_HNSW_SPACE, COLLECTION_NAME, get_em
 
 def topic_meta_false() -> dict:
     return {f"topic_{t}": False for t in ALL_TOPICS}
+
+
+def unwrap_curios_result(raw: str) -> dict[str, Any]:
+    """Strip [CURIOS RESULT] delimiters and parse the JSON payload."""
+    inner = raw.replace("[CURIOS RESULT]", "").replace("[/CURIOS RESULT]", "").strip()
+    return json.loads(inner)
 
 
 def reset_server_globals() -> None:

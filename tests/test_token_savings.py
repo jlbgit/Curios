@@ -4,40 +4,51 @@ Benchmark: token cost of Curios MCP vs reading raw conversation files.
 Calls curios_search directly and measures returned text, then compares
 against the cost of reading raw JSONL transcripts for the same project.
 
-Needs populated Chroma (CURIOS_DATA), tests/eval/.env with CURIOS_EVAL_PROJECTS,
-and JSONL transcripts under TRANSCRIPTS_BASE matching that project.
-(`-m live` is enough; this module's only test is @pytest.mark.live.)
+Needs populated Chroma (CURIOS_DATA), CURIOS_EVAL_PROJECTS (export or
+`tests/eval/.env`), and JSONL transcripts under TRANSCRIPTS_BASE matching that project.
 
 Usage:
-    uv run pytest tests/test_token_savings.py -m live -s
-
-Together with MCP live tests:
-    uv run pytest tests/test_mcp_interactions.py tests/test_token_savings.py -m live -v
-
-Project list: CURIOS_EVAL_PROJECTS in tests/eval/.env (see tests/eval/.env.example).
+    uv run pytest -m live -v
+    uv run pytest -m benchmark -v
 """
 
 from __future__ import annotations
 
 import json
-import sys
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-_EVAL_DIR = Path(__file__).parent / "eval"
-if str(_EVAL_DIR) not in sys.path:
-    sys.path.insert(0, str(_EVAL_DIR))
+from curios.config import TRANSCRIPTS_BASE
+from curios.server import curios_search
 
-from _config import (  # noqa: E402
-    CHARS_PER_TOKEN,
-    EVAL_PROJECTS,
-    TOOL_SCHEMA_OVERHEAD,
-)
+CHARS_PER_TOKEN = 4
+TOOL_SCHEMA_OVERHEAD = 150
 
-from curios.config import TRANSCRIPTS_BASE  # noqa: E402
-from curios.server import curios_search  # noqa: E402
+_EVAL_DOTENV = Path(__file__).resolve().parent / "eval" / ".env"
+
+
+def _load_eval_dotenv() -> None:
+    """Merge tests/eval/.env into os.environ (setdefault — shell wins). Same as eval/_config."""
+    if not _EVAL_DOTENV.is_file():
+        return
+    for line in _EVAL_DOTENV.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
+
+
+def _eval_projects() -> list[str]:
+    _load_eval_dotenv()
+    return [
+        p.strip()
+        for p in os.environ.get("CURIOS_EVAL_PROJECTS", "").split(",")
+        if p.strip()
+    ]
 
 # Generic topic-aligned queries (no project-specific wording).
 QUERIES: list[tuple[str, str, str]] = [
@@ -164,9 +175,12 @@ def curios_cost(query: str, project: str | None, topic: str, n_results: int) -> 
 @pytest.mark.benchmark
 def test_token_savings_vs_oracle() -> None:
     """Curios must use at least 10x fewer tokens than reading cited convs."""
-    if not EVAL_PROJECTS:
-        pytest.skip("Set CURIOS_EVAL_PROJECTS in tests/eval/.env")
-    project = EVAL_PROJECTS[0]
+    eval_projects = _eval_projects()
+    if not eval_projects:
+        pytest.skip(
+            "Set CURIOS_EVAL_PROJECTS in tests/eval/.env or export it (comma-separated names)"
+        )
+    project = eval_projects[0]
     conv_chars = project_conversations(project)
     assert conv_chars, f"No conversations found for project '{project}'"
 

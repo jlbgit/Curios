@@ -9,6 +9,8 @@ import pytest
 
 from curios import sentinels
 
+pytestmark = pytest.mark.storage
+
 
 @pytest.fixture(autouse=True)
 def _sentinels_db(tmp_path, monkeypatch):

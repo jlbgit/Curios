@@ -10,22 +10,15 @@ import pytest
 
 from curios import bm25, sentinels
 from curios.config import SCHEMA_VERSION
-from tests.conftest import make_chroma_collection, patch_curios_roots, reset_server_globals, topic_meta_false
+from tests.conftest import make_chroma_collection, topic_meta_false
+
+pytestmark = pytest.mark.maintenance
 
 
-@pytest.fixture
-def data_env(monkeypatch, tmp_path):
-    patch_curios_roots(monkeypatch, tmp_path)
-    yield tmp_path
-    bm25.close_connection()
-    sentinels.close_connection()
-    reset_server_globals()
-
-
-def test_prune_shallow_cleans_bm25_and_sentinels(data_env):
+def test_prune_shallow_cleans_bm25_and_sentinels(curios_data_env):
     from curios import maintain
 
-    chroma_path = data_env / "curios_data" / "chromadb"
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
     os.chmod(chroma_path, 0o700)
     coll = make_chroma_collection(chroma_path)
     meta_shallow = {
@@ -80,14 +73,14 @@ def test_prune_shallow_cleans_bm25_and_sentinels(data_env):
     assert all(r["conversation_id"] != "conv-s" for r in remaining)
 
 
-def test_prune_stale_cleans_sentinel_and_bm25(data_env):
+def test_prune_stale_cleans_sentinel_and_bm25(curios_data_env):
     from curios import maintain
 
-    proj_base = data_env / "projects"
+    proj_base = curios_data_env / "projects"
     rel = "slug/agent-transcripts/missing.jsonl"
     abs_path = str((proj_base / rel).resolve())
 
-    chroma_path = data_env / "curios_data" / "chromadb"
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
     os.chmod(chroma_path, 0o700)
     coll = make_chroma_collection(chroma_path)
     meta = {
@@ -123,10 +116,10 @@ def test_prune_stale_cleans_sentinel_and_bm25(data_env):
     assert sentinels.get_recent_conversations(projects=["P"], n_results=5, include_shallow=True) == []
 
 
-def test_prune_project_before_cleans_bm25_and_sentinels(data_env):
+def test_prune_project_before_cleans_bm25_and_sentinels(curios_data_env):
     from curios import maintain
 
-    chroma_path = data_env / "curios_data" / "chromadb"
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
     os.chmod(chroma_path, 0o700)
     coll = make_chroma_collection(chroma_path)
     meta_old = {
@@ -188,10 +181,10 @@ def test_prune_project_before_cleans_bm25_and_sentinels(data_env):
     assert names == {"c-new"}
 
 
-def test_cmd_build_bm25_wipes_and_refills_under_index_lock(data_env, monkeypatch):
+def test_cmd_build_bm25_wipes_and_refills_under_index_lock(curios_data_env, monkeypatch):
     from curios import indexer, maintain
 
-    chroma_path = data_env / "curios_data" / "chromadb"
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
     os.chmod(chroma_path, 0o700)
     coll = make_chroma_collection(chroma_path)
     meta = {
@@ -226,10 +219,10 @@ def test_cmd_build_bm25_wipes_and_refills_under_index_lock(data_env, monkeypatch
     assert bm25.search("alpha", ["Q"], 10) == ["q1"]
 
 
-def test_cmd_status_stats_verify_smoke(data_env, capsys):
+def test_cmd_status_stats_verify_smoke(curios_data_env, capsys):
     from curios import maintain
 
-    chroma_path = data_env / "curios_data" / "chromadb"
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
     os.chmod(chroma_path, 0o700)
     coll = make_chroma_collection(chroma_path)
     rel = "slug/agent-transcripts/x.jsonl"
@@ -246,7 +239,7 @@ def test_cmd_status_stats_verify_smoke(data_env, capsys):
     }
     coll.upsert(ids=["id1"], documents=["hello world"], metadatas=[meta])
 
-    x = data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
+    x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
     x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
 

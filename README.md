@@ -420,7 +420,25 @@ An informal RAG evaluation was run against a personal conversation corpus (8,493
 
 **Faithfulness is the strongest signal** — Curios does not hallucinate. Recall is the known weak point, particularly for topics like `learnings` where insights are spread thinly across many conversations.
 
-*Test suite available under `tests/` — unit, integration, and MCP interaction tests. Contributions improving relevancy and recall are very welcome!*
+## Testing
+
+```bash
+uv sync                                    # install dev dependencies
+uv run pytest                              # all tests (live/benchmark auto-skip if prerequisites missing)
+uv run pytest -m config                    # config, redaction, slugs, keywords
+uv run pytest -m indexing                  # transcript parsing, chunking, queue, catch-up
+uv run pytest -m storage                   # BM25 + sentinels SQLite
+uv run pytest -m server                    # MCP retrieval helpers + tool handlers
+uv run pytest -m integration               # E2E: synthetic index → search/recap/related
+uv run pytest -m maintenance               # prune, build-bm25, status/stats/verify
+uv run pytest -m live                      # live-DB only (needs populated CURIOS_DATA)
+uv run pytest -m benchmark                 # token savings benchmark (needs CURIOS_DATA + tests/eval/.env)
+uv run pytest -m "not live"                # functional only, skip live-DB and benchmark
+```
+
+The `tests/eval/` directory (RAG quality pipeline with DeepEval) is excluded by default and not required. See [`tests/README.md`](tests/README.md) for the full test reference.
+
+Contributions improving relevancy and recall are very welcome!
 
 ## Security
 
