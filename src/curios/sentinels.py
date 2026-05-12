@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any
 
-from curios.config import CURIOS_DATA, RECAP_PREVIEW_MAX, SENTINELS_DB_PATH
+from curios.config import RECAP_PREVIEW_MAX, SENTINELS_DB_PATH, STALE_MAX_AGE_S, ensure_data_dir
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
@@ -38,12 +38,16 @@ CREATE INDEX IF NOT EXISTS idx_conversations_project_mtime ON conversations(proj
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-        os.chmod(CURIOS_DATA, 0o700)
+        ensure_data_dir()
         path = str(SENTINELS_DB_PATH)
         _conn = sqlite3.connect(path, check_same_thread=False)
         _conn.executescript(_SCHEMA_SQL)
         _conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            _conn.execute("ALTER TABLE sentinels ADD COLUMN file_mtime INTEGER")
+            _conn.commit()
+        except sqlite3.OperationalError:
+            pass
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -63,31 +67,55 @@ def close_connection() -> None:
             _conn = None
 
 
-def is_indexed(abs_path: str, schema_version: int) -> bool:
+def is_indexed(abs_path: str, schema_version: int, *, file_mtime: int | None = None) -> bool:
     with _lock:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT schema_version FROM sentinels WHERE abs_path = ?",
+            "SELECT schema_version, file_mtime, indexed_at FROM sentinels WHERE abs_path = ?",
             (abs_path,),
         ).fetchone()
     if not row:
         return False
-    return int(row[0]) == schema_version
+    if int(row[0]) != schema_version:
+        return False
+    if file_mtime is not None:
+        stored_mtime = row[1]
+        indexed_at = int(row[2])
+        if stored_mtime is not None:
+            if file_mtime > int(stored_mtime):
+                return False
+        elif file_mtime > indexed_at:
+            return False
+        else:
+            _backfill_file_mtime(abs_path, file_mtime)
+    return True
 
 
-def mark_indexed(abs_path: str, schema_version: int) -> None:
+def _backfill_file_mtime(abs_path: str, file_mtime: int) -> None:
+    """Set file_mtime on legacy sentinel rows (one-time migration)."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE sentinels SET file_mtime = ? WHERE abs_path = ? AND file_mtime IS NULL",
+            (file_mtime, abs_path),
+        )
+        conn.commit()
+
+
+def mark_indexed(abs_path: str, schema_version: int, *, file_mtime: int | None = None) -> None:
     now = int(time.time())
     with _lock:
         conn = _get_conn()
         conn.execute(
             """
-            INSERT INTO sentinels(abs_path, schema_version, indexed_at)
-            VALUES (?, ?, ?)
+            INSERT INTO sentinels(abs_path, schema_version, indexed_at, file_mtime)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(abs_path) DO UPDATE SET
                 schema_version = excluded.schema_version,
-                indexed_at = excluded.indexed_at
+                indexed_at = excluded.indexed_at,
+                file_mtime = excluded.file_mtime
             """,
-            (abs_path, schema_version, now),
+            (abs_path, schema_version, now, file_mtime),
         )
         conn.commit()
 
@@ -99,6 +127,30 @@ def wipe() -> None:
         conn.execute("DELETE FROM sentinels")
         conn.execute("DELETE FROM conversations")
         conn.commit()
+
+
+def find_stale(schema_version: int, max_age_s: int = STALE_MAX_AGE_S) -> list[str]:
+    """Return abs_paths of files indexed recently whose mtime has since changed."""
+    cutoff = int(time.time()) - max_age_s
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT abs_path, file_mtime, indexed_at FROM sentinels "
+            "WHERE schema_version = ? AND indexed_at >= ?",
+            (schema_version, cutoff),
+        ).fetchall()
+    stale: list[str] = []
+    for abs_path, stored_mtime, indexed_at in rows:
+        try:
+            current_mtime = int(os.path.getmtime(abs_path))
+        except OSError:
+            continue
+        if stored_mtime is not None:
+            if current_mtime > int(stored_mtime):
+                stale.append(abs_path)
+        elif current_mtime > int(indexed_at):
+            stale.append(abs_path)
+    return stale
 
 
 def delete_sentinel(abs_path: str) -> None:

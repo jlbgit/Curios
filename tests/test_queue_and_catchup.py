@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+import time
+from unittest.mock import MagicMock
 
 import pytest
 
-from curios import bm25, sentinels
-from tests.conftest import patch_curios_roots, reset_server_globals
+from curios import sentinels
+from tests.conftest import patch_curios_roots
+
+pytestmark = pytest.mark.indexing
 
 
 # ── queue_for_indexing / drain_pending_queue ─────────────────
@@ -165,6 +167,90 @@ def test_session_hook_tries_alternate_keys(monkeypatch, tmp_path):
         queue_path.unlink(missing_ok=True)
 
 
+def test_session_hook_fallback_finds_transcript(monkeypatch, tmp_path):
+    """When no explicit path key is present, fallback locates via conversation_id + workspace_roots."""
+    transcripts_base = tmp_path / "projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", transcripts_base)
+
+    root = "/home/user/myproject"
+    slug = root.replace("/", "-").lstrip("-")
+    conv_id = "abc-123"
+    transcript = transcripts_base / slug / "agent-transcripts" / conv_id / f"{conv_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    queue_path, _ = _run_session_hook(
+        monkeypatch,
+        tmp_path,
+        {"conversation_id": conv_id, "workspace_roots": [root]},
+    )
+
+    assert queue_path.exists()
+    lines = queue_path.read_text().splitlines()
+    assert str(transcript.resolve()) in lines
+
+
+def test_session_hook_fallback_string_root(monkeypatch, tmp_path):
+    """Fallback handles workspace_roots as a single string (not list)."""
+    transcripts_base = tmp_path / "projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", transcripts_base)
+
+    root = "/home/user/proj"
+    slug = root.replace("/", "-").lstrip("-")
+    conv_id = "def-456"
+    transcript = transcripts_base / slug / "agent-transcripts" / conv_id / f"{conv_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    queue_path, _ = _run_session_hook(
+        monkeypatch,
+        tmp_path,
+        {"conversation_id": conv_id, "workspace_roots": root},
+    )
+
+    assert queue_path.exists()
+    lines = queue_path.read_text().splitlines()
+    assert str(transcript.resolve()) in lines
+
+
+def test_session_hook_fallback_flat_layout(monkeypatch, tmp_path):
+    """Fallback finds transcript in flat layout (no conv_id subdirectory)."""
+    transcripts_base = tmp_path / "projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", transcripts_base)
+
+    root = "/home/user/flat"
+    slug = root.replace("/", "-").lstrip("-")
+    conv_id = "flat-999"
+    transcript = transcripts_base / slug / "agent-transcripts" / f"{conv_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    queue_path, _ = _run_session_hook(
+        monkeypatch,
+        tmp_path,
+        {"conversation_id": conv_id, "workspace_roots": [root]},
+    )
+
+    assert queue_path.exists()
+    lines = queue_path.read_text().splitlines()
+    assert str(transcript.resolve()) in lines
+
+
+def test_session_hook_fallback_no_match_logs(monkeypatch, tmp_path):
+    """Fallback returns None when transcript doesn't exist on disk."""
+    transcripts_base = tmp_path / "projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", transcripts_base)
+
+    _, log_path = _run_session_hook(
+        monkeypatch,
+        tmp_path,
+        {"conversation_id": "nonexistent", "workspace_roots": ["/some/root"]},
+    )
+
+    assert log_path.exists()
+    assert "no usable transcript path" in log_path.read_text()
+
+
 def test_session_hook_logs_when_no_path(monkeypatch, tmp_path):
     _, log_path = _run_session_hook(monkeypatch, tmp_path, {"irrelevant": "data"})
 
@@ -205,7 +291,7 @@ def test_catch_up_drains_queue_and_indexes(monkeypatch, tmp_path):
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = True
+    server._last_discovery = time.time()
 
     transcript = tmp_path / "projects" / "s" / "agent-transcripts" / "c.jsonl"
     transcript.parent.mkdir(parents=True)
@@ -234,7 +320,7 @@ def test_catch_up_full_discovery_on_first_call(monkeypatch, tmp_path):
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = False
+    server._last_discovery = 0.0
 
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
@@ -257,7 +343,7 @@ def test_catch_up_full_discovery_on_first_call(monkeypatch, tmp_path):
 
     server._catch_up_index()
 
-    assert server._catch_up_done is True
+    assert server._last_discovery > 0
     assert len(run_index_calls) == 1
     resolved_paths = [str(p.resolve()) for p in run_index_calls[0]]
     assert str(t1.resolve()) in resolved_paths
@@ -268,7 +354,7 @@ def test_catch_up_skips_already_indexed(monkeypatch, tmp_path):
     from curios.config import SCHEMA_VERSION
     import curios.server as server
 
-    server._catch_up_done = False
+    server._last_discovery = 0.0
 
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
@@ -296,7 +382,7 @@ def test_catch_up_resets_client_after_indexing(monkeypatch, tmp_path):
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = True
+    server._last_discovery = time.time()
     server._client_instance = MagicMock()
 
     transcript = tmp_path / "projects" / "s" / "agent-transcripts" / "r.jsonl"
@@ -324,7 +410,7 @@ def test_catch_up_no_crash_on_exception(monkeypatch, tmp_path, caplog):
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = True
+    server._last_discovery = time.time()
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,7 +436,7 @@ def test_catch_up_deduplicates_discovery_and_queue(monkeypatch, tmp_path):
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = False
+    server._last_discovery = 0.0
 
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
@@ -377,12 +463,12 @@ def test_catch_up_deduplicates_discovery_and_queue(monkeypatch, tmp_path):
     assert resolved.count(str(t1.resolve())) == 1
 
 
-def test_catch_up_second_call_only_drains_queue(monkeypatch, tmp_path):
-    """After first call sets _catch_up_done, subsequent calls skip discovery."""
+def test_catch_up_second_call_skips_discovery_within_interval(monkeypatch, tmp_path):
+    """Immediate second call skips discovery (within DISCOVERY_INTERVAL_S)."""
     patch_curios_roots(monkeypatch, tmp_path)
     import curios.server as server
 
-    server._catch_up_done = False
+    server._last_discovery = 0.0
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,10 +478,9 @@ def test_catch_up_second_call_only_drains_queue(monkeypatch, tmp_path):
     )
 
     server._catch_up_index()
-    assert server._catch_up_done is True
+    assert server._last_discovery > 0
 
     discover_calls = []
-    original_discover = None
 
     import curios.indexer as idx
     original_discover = idx.discover_transcripts
@@ -407,5 +492,95 @@ def test_catch_up_second_call_only_drains_queue(monkeypatch, tmp_path):
     monkeypatch.setattr("curios.indexer.discover_transcripts", tracking_discover)
 
     server._catch_up_index()
-
     assert discover_calls == []
+
+
+def test_catch_up_rediscovers_after_interval_expires(monkeypatch, tmp_path):
+    """Discovery re-runs once DISCOVERY_INTERVAL_S has elapsed."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    import curios.server as server
+    from curios.config import DISCOVERY_INTERVAL_S
+
+    server._last_discovery = time.time() - DISCOVERY_INTERVAL_S - 1
+
+    queue_path = tmp_path / "curios_data" / "pending_index.txt"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+    monkeypatch.setattr("curios.indexer.run_index", lambda *a, **kw: (0, 0))
+
+    discover_calls = []
+    import curios.indexer as idx
+    original_discover = idx.discover_transcripts
+
+    def tracking_discover(project_filter=None):
+        discover_calls.append(True)
+        return original_discover(project_filter)
+
+    monkeypatch.setattr("curios.indexer.discover_transcripts", tracking_discover)
+
+    server._catch_up_index()
+
+    assert len(discover_calls) == 1
+    assert server._last_discovery > time.time() - 5
+
+
+def test_catch_up_detects_stale_and_force_reindexes(monkeypatch, tmp_path):
+    """Stale files (mtime changed since indexing) are re-indexed with force=True."""
+    import os
+    import time
+
+    patch_curios_roots(monkeypatch, tmp_path)
+    from curios.config import SCHEMA_VERSION
+    import curios.server as server
+
+    server._last_discovery = time.time()
+
+    proj = tmp_path / "projects" / "slug" / "agent-transcripts"
+    proj.mkdir(parents=True)
+    t1 = proj / "stale.jsonl"
+    t1.write_text('{"role":"user","message":{"content":"old"}}\n')
+    ap = str(t1.resolve())
+    stored_mtime = 1000
+    sentinels.mark_indexed(ap, SCHEMA_VERSION, file_mtime=stored_mtime)
+
+    future = stored_mtime + 10
+    os.utime(t1, (future, future))
+
+    queue_path = tmp_path / "curios_data" / "pending_index.txt"
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+
+    run_index_calls = []
+
+    def fake_run_index(paths, force, dry_run, project_override=None):
+        run_index_calls.append({"paths": list(paths), "force": force})
+        return (len(paths), 5)
+
+    monkeypatch.setattr("curios.indexer.run_index", fake_run_index)
+
+    server._catch_up_index()
+
+    assert len(run_index_calls) == 1
+    assert run_index_calls[0]["force"] is True
+    resolved = [str(p.resolve()) for p in run_index_calls[0]["paths"]]
+    assert ap in resolved
+
+
+def test_catch_up_skips_deleted_transcript_gracefully(monkeypatch, tmp_path):
+    """A transcript deleted after queueing doesn't crash catch-up."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    import curios.server as server
+
+    server._last_discovery = time.time()
+
+    transcript = tmp_path / "projects" / "s" / "agent-transcripts" / "gone.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    queue_path = tmp_path / "curios_data" / "pending_index.txt"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(str(transcript.resolve()) + "\n")
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+
+    transcript.unlink()
+
+    server._catch_up_index()

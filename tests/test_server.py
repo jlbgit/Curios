@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -10,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from curios.config import ALL_TOPICS
 from curios.server import (
     DECISION_BOOST,
     RRF_K,
@@ -24,15 +22,9 @@ from curios.server import (
     curios_related,
     curios_search,
 )
+from tests.conftest import topic_meta_false, unwrap_curios_result
 
-
-def topic_meta_false() -> dict:
-    return {f"topic_{t}": False for t in ALL_TOPICS}
-
-
-def unwrap(raw: str) -> dict:
-    inner = raw.replace("[CURIOS RESULT]", "").replace("[/CURIOS RESULT]", "").strip()
-    return json.loads(inner)
+pytestmark = pytest.mark.server
 
 
 def test_topics_display_empty_meta_is_general():
@@ -40,8 +32,7 @@ def test_topics_display_empty_meta_is_general():
 
 
 def test_topics_display_all_false_is_general():
-    meta = {f"topic_{t}": False for t in ALL_TOPICS}
-    assert _topics_display(meta) == "general"
+    assert _topics_display(topic_meta_false()) == "general"
 
 
 def test_unknown_topic_logs_warning(caplog):
@@ -103,7 +94,7 @@ def test_curios_search_results_use_score_key():
         with patch("curios.server._retry_chroma", lambda fn: fn()):
             with patch("curios.server.HYBRID_SEARCH_ENABLED", False):
                 raw = curios_search(query="hello there", project="Proj", n_results=3)
-    data = unwrap(raw)
+    data = unwrap_curios_result(raw)
     assert "results" in data
     assert len(data["results"]) == 1
     r = data["results"][0]
@@ -154,7 +145,7 @@ def test_curios_related_uses_score_key():
     with patch("curios.server._collection", return_value=fake):
         with patch("curios.server._retry_chroma", lambda fn: fn()):
             raw = curios_related(conversation_id="source-c", n_results=3)
-    data = unwrap(raw)
+    data = unwrap_curios_result(raw)
     grouped = data["related_by_project"]
     flat = [r for rows in grouped.values() for r in rows]
     assert flat

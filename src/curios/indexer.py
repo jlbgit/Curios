@@ -40,6 +40,7 @@ from curios.config import (
     TOPIC_ROLE_WEIGHTS,
     TRANSCRIPTS_BASE,
     _DEFAULT_ROLE_WEIGHTS,
+    ensure_data_dir,
     get_compiled_topic_patterns,
     conversation_id_from_path,
     extract_project_name,
@@ -61,9 +62,8 @@ NOVELTY_DISTANCE_MAX = 1.0 - NOVELTY_THRESHOLD
 
 @contextmanager
 def index_lock() -> Iterator[None]:
-    CURIOS_DATA.mkdir(parents=True, exist_ok=True)
+    ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
-    os.chmod(CURIOS_DATA, 0o700)
     fp = open(LOCK_PATH, "a+")
     try:
         fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
@@ -336,14 +336,9 @@ def _novelty_labels(
     return out
 
 
-def _delete_existing_conversation(coll, project: str, conversation_id: str) -> int:
+def _delete_existing_conversation(coll, conversation_id: str) -> int:
     got = coll.get(
-        where={
-            "$and": [
-                {"project": {"$eq": project}},
-                {"conversation_id": {"$eq": conversation_id}},
-            ]
-        },
+        where={"conversation_id": {"$eq": conversation_id}},
     )
     ids = got.get("ids") or []
     if ids:
@@ -360,7 +355,8 @@ def _index_file(
     project_override: str | None = None,
 ) -> int:
     abs_path = str(path.resolve())
-    if not force and sentinels.is_indexed(abs_path, SCHEMA_VERSION):
+    current_mtime = int(path.stat().st_mtime)
+    if not force and sentinels.is_indexed(abs_path, SCHEMA_VERSION, file_mtime=current_mtime):
         log.debug("already indexed, skipping %s", path.name)
         return 0
 
@@ -380,11 +376,11 @@ def _index_file(
 
     conversation_id = conversation_id_from_path(path)
     if force and not dry_run:
-        n_del = _delete_existing_conversation(coll, project, conversation_id)
+        n_del = _delete_existing_conversation(coll, conversation_id)
         if n_del:
             log.debug("force re-index: removed %s prior chunks for %s", n_del, conversation_id)
     rel = transcript_relative_path(path)
-    mtime = int(path.stat().st_mtime)
+    mtime = current_mtime
     depth = "shallow" if user_count < SHALLOW_THRESHOLD else "standard"
     safe_proj = _safe_id_part(project)
     all_conv_topics: set[str] = set()
@@ -432,7 +428,7 @@ def _index_file(
 
     if not pending:
         if not dry_run:
-            sentinels.mark_indexed(abs_path, SCHEMA_VERSION)
+            sentinels.mark_indexed(abs_path, SCHEMA_VERSION, file_mtime=current_mtime)
             _push_recap_cache("")
         return 0
 
@@ -457,7 +453,7 @@ def _index_file(
     coll.upsert(ids=ids, documents=docs, metadatas=metas)
     bm25.insert_many(bm25_rows)
 
-    sentinels.mark_indexed(abs_path, SCHEMA_VERSION)
+    sentinels.mark_indexed(abs_path, SCHEMA_VERSION, file_mtime=current_mtime)
     _push_recap_cache(pending[0][1])
     return len(pending)
 
@@ -498,8 +494,8 @@ def run_index(
     dry_run: bool,
     project_override: str | None = None,
 ) -> tuple[int, int]:
+    ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
-    os.chmod(CURIOS_DATA, 0o700)
     try:
         os.chmod(CHROMADB_PATH, 0o700)
     except OSError:
@@ -576,6 +572,32 @@ def drain_pending_queue() -> list[Path]:
     return [Path(line) for line in lines if line.strip() and Path(line).is_file()]
 
 
+def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:
+    """Try to find the transcript file when transcript_path is None.
+
+    Uses workspace_roots + conversation_id from the hook payload to scan
+    the workspace's agent-transcripts directory.
+    """
+    conv_id = payload.get("conversation_id")
+    roots = payload.get("workspace_roots")
+    if not conv_id or not isinstance(conv_id, str):
+        return None
+    if not roots or not isinstance(roots, (list, str)):
+        return None
+    if isinstance(roots, str):
+        roots = [roots]
+    for root in roots:
+        slug = root.replace("/", "-").lstrip("-")
+        for candidate in (
+            TRANSCRIPTS_BASE / slug / "agent-transcripts" / conv_id / f"{conv_id}.jsonl",
+            TRANSCRIPTS_BASE / slug / "agent-transcripts" / f"{conv_id}.jsonl",
+        ):
+            if candidate.is_file():
+                _log_to_index_file(f"fallback found {candidate}")
+                return str(candidate)
+    return None
+
+
 def _session_hook() -> None:
     """Called by Cursor's sessionEnd hook.
 
@@ -594,6 +616,8 @@ def _session_hook() -> None:
         if isinstance(v, str) and v:
             path_str = v
             break
+    if not path_str:
+        path_str = _locate_transcript_fallback(payload)
     if not path_str:
         candidates = {k: repr(payload.get(k)) for k in ("transcript_path", "transcriptPath", "file", "path") if k in payload}
         _log_to_index_file(f"no usable transcript path; candidates={candidates} all_keys={list(payload.keys())}")

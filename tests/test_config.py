@@ -17,6 +17,8 @@ from curios.config import (
     transcript_relative_path,
 )
 
+pytestmark = pytest.mark.config
+
 
 def test_redact_expanded_patterns():
     long_ant = "sk-ant-api03-" + "a" * 25
