@@ -1,6 +1,6 @@
 # Curios
 
-**v0.5.2**
+**v0.5.3**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 

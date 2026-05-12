@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.3 — 2026-05-12
+
+### Indexing & concurrency
+- **Catch-up indexing in the MCP server:** `curios_recap`, `curios_search`, and `curios_related` call `_catch_up_index()` before serving. Missed transcripts are indexed **in the server process** (full discovery on a timer, plus pending-queue drain and stale-file detection), avoiding concurrent ChromaDB writers from `curios-index` and the IDE hook that previously risked HNSW/SQLite corruption.
+- **Pending queue:** `queue_for_indexing()` appends absolute paths to `pending_index.txt`; `drain_pending_queue()` renames to `.processing` and clears atomically so hook appends cannot race reads.
+- **Session hook hardening:** `_log_to_index_file()` for hook-side logging; `_locate_transcript_fallback()` resolves a transcript from `workspace_roots` + `conversation_id` when `transcript_path` is missing.
+- **Sentinel mtime tracking:** `sentinels` table gains optional `file_mtime`; `is_indexed(..., file_mtime=...)` treats newer disk mtime as not indexed; `find_stale()` finds recently indexed paths whose files changed on disk; legacy rows backfill `file_mtime` on read.
+- **Force re-index deletes by conversation:** `_delete_existing_conversation` filters Chroma only by `conversation_id` (not `project`), so rewrites do not leave orphan chunks when project metadata differs.
+- **Indexer resilience:** one retry with a fresh Chroma client after `chromadb.errors.InternalError` or `sqlite3.OperationalError`; `ensure_data_dir()` centralises data-dir creation; log tag `[curios-index]`; `index_lock` no longer `chmod`s all of `CURIOS_DATA` on every lock.
+- **MCP tool recovery:** `@_with_client_recovery` resets the process Chroma client once on retriable Chroma errors, then retries the tool.
+- **Operational metadata:** successful catch-up runs write `last_indexed.json` (`indexed_at`, `files_done`, `chunks_written`). New config `DISCOVERY_INTERVAL_S` (env `CURIOS_DISCOVERY_INTERVAL_S`, default 300s).
+
+### Maintenance CLI
+- **`curios-maintain status`:** prints index health — last recorded run, transcripts indexed vs discovered, pending queue depth, and recent warning/error lines from `index.log` (verbose shows lines).
+
+### Tests & developer UX
+- **New `tests/test_queue_and_catchup.py`:** queue file, atomic drain, hook payload fallback, catch-up and client-recovery behaviour (mocked Chroma/sentinels where appropriate).
+- **Pytest markers:** `[tool.pytest.ini_options]` documents `config`, `indexing`, `storage`, `server`, `integration`, `maintenance`, `live`, `benchmark`; tests are tagged so you can run `pytest -m indexing`, `-m "not live"`, etc.
+- **Evals optional by default:** `addopts` includes `--ignore=tests/eval` so a checkout without `tests/eval` or DeepEval still runs the main suite.
+- **`tests/README.md` & root `README.md`:** quick-reference commands for marker-based runs and note that `tests/eval/` is excluded by default.
+
 ## 0.5.2 — 2026-05-07
 
 ### Bug fix
