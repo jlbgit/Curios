@@ -6,8 +6,7 @@ import re
 import json
 import logging
 import os
-import shutil
-import subprocess
+import sqlite3
 import sys
 import time
 from contextlib import contextmanager
@@ -51,7 +50,7 @@ from curios.config import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [curios-indexer] %(levelname)s %(message)s",
+    format="%(asctime)s [curios-index] %(levelname)s %(message)s",
 )
 log = logging.getLogger("curios.indexer")
 
@@ -515,6 +514,16 @@ def run_index(
         with index_lock():
             try:
                 n = _index_file(path, coll, force, dry_run, project_override)
+            except (chromadb.errors.InternalError, sqlite3.OperationalError) as e:
+                log.warning("ChromaDB error indexing %s, retrying once: %s", path, e)
+                time.sleep(1)
+                client = chromadb.PersistentClient(path=str(CHROMADB_PATH))
+                coll = _get_collections(client)
+                try:
+                    n = _index_file(path, coll, force, dry_run, project_override)
+                except Exception as e2:
+                    log.warning("skip %s after retry: %s", path, e2)
+                    n = 0
             except OSError as e:
                 log.warning("skip %s: %s", path, e)
                 n = 0
@@ -525,8 +534,55 @@ def run_index(
     return files_done, total_chunks
 
 
+def _log_to_index_file(msg: str) -> None:
+    """Append a line to index.log from the hook process (before subprocess spawn)."""
+    try:
+        CURIOS_DATA.mkdir(parents=True, exist_ok=True)
+        with open(INDEX_LOG_PATH, "a") as f:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{ts} [curios-hook] {msg}\n")
+    except OSError:
+        pass
+
+
+PENDING_QUEUE_PATH = CURIOS_DATA / "pending_index.txt"
+
+
+def queue_for_indexing(path: Path) -> None:
+    """Append a transcript path to the pending queue (no ChromaDB access)."""
+    CURIOS_DATA.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_QUEUE_PATH, "a") as f:
+        f.write(str(path.resolve()) + "\n")
+
+
+def drain_pending_queue() -> list[Path]:
+    """Read and clear the pending queue, returning valid file paths.
+
+    Uses atomic rename so a concurrent hook append can't be lost between
+    read and delete.
+    """
+    processing = PENDING_QUEUE_PATH.with_suffix(".processing")
+    try:
+        os.rename(PENDING_QUEUE_PATH, processing)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+    try:
+        lines = processing.read_text().splitlines()
+        processing.unlink(missing_ok=True)
+    except OSError:
+        return []
+    return [Path(line) for line in lines if line.strip() and Path(line).is_file()]
+
+
 def _session_hook() -> None:
-    """Called by Cursor's sessionEnd hook. Reads JSON from stdin and spawns indexer in background."""
+    """Called by Cursor's sessionEnd hook.
+
+    Reads JSON from stdin and queues the transcript path for the MCP
+    server's catch-up indexer. Does NOT access ChromaDB directly —
+    avoids cross-process HNSW contention.
+    """
     raw = sys.stdin.read()
     path_str = None
     try:
@@ -539,33 +595,16 @@ def _session_hook() -> None:
             path_str = v
             break
     if not path_str:
-        log.warning("session hook: no transcript path in payload keys=%s", list(payload.keys()))
+        candidates = {k: repr(payload.get(k)) for k in ("transcript_path", "transcriptPath", "file", "path") if k in payload}
+        _log_to_index_file(f"no usable transcript path; candidates={candidates} all_keys={list(payload.keys())}")
         return
     path = Path(path_str)
     if not path.is_file():
-        log.warning("session hook: missing file %s", path)
+        _log_to_index_file(f"missing file {path}")
         return
 
-    exe = shutil.which("curios-index")
-    if not exe:
-        exe = shutil.which("python3")
-        if not exe:
-            log.warning("session hook: curios-index not on PATH and python3 not found")
-            return
-        log.warning("session hook: curios-index not on PATH, falling back to python3 -m curios.indexer")
-        cmd = [exe, "-m", "curios.indexer", "--file", str(path.resolve())]
-    else:
-        cmd = [exe, "--file", str(path.resolve())]
-
-    CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-    with open(INDEX_LOG_PATH, "a") as log_file:
-        subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-        )
+    queue_for_indexing(path)
+    _log_to_index_file(f"queued {path}")
 
 
 def _cli() -> int:

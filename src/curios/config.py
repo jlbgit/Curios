@@ -785,7 +785,4 @@ def transcript_relative_path(transcript_path: Path) -> str:
 
 
 def conversation_id_from_path(transcript_path: Path) -> str:
-    stem = transcript_path.stem
-    if len(stem) == 36 and stem.count("-") == 4:
-        return stem
-    return stem
+    return transcript_path.stem
