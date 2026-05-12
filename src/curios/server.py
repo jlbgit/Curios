@@ -34,8 +34,6 @@ from curios.config import (
     MULTI_QUERY_KW_COUNT,
     MULTI_QUERY_MAX_VARIANTS,
     RECAP_DEFAULT_N_RESULTS,
-    RECAP_FETCH_LIMIT,
-    RECAP_PREVIEW_MAX,
     RELATED_DEFAULT_N_RESULTS,
     RELATED_FETCH_MAX,
     RELATED_OVERFETCH_FACTOR,
@@ -51,6 +49,7 @@ from curios.config import (
     SEARCH_FETCH_MIN,
     SEARCH_MAX_TEXT,
     SEARCH_OVERFETCH_FACTOR,
+    DISCOVERY_INTERVAL_S,
     get_compiled_topic_patterns,
     get_embedding_function,
     get_topic_keywords,
@@ -81,7 +80,7 @@ def _wrap(body: str) -> str:
 
 _client_instance: chromadb.PersistentClient | None = None
 _bm25_bootstrapped = False
-_catch_up_done = False
+_last_discovery: float = 0.0
 
 
 def _get_client() -> chromadb.PersistentClient:
@@ -276,39 +275,50 @@ def _catch_up_index() -> None:
     """Index transcripts missed by the session hook, then drain the queue.
 
     Two phases:
-    1. Full discovery (once per server lifetime): scans all transcript
+    1. Full discovery (every DISCOVERY_INTERVAL_S): scans all transcript
        dirs for files not in sentinels.
-    2. Queue drain (every call): processes paths queued by the session
-       hook. This is cheap — just reads a small text file.
+    2. Queue drain + stale check (every call): processes paths queued by
+       the session hook and detects mtime-changed files. This is cheap.
 
     All ChromaDB writes happen in-process (the MCP server), avoiding the
     cross-process HNSW contention that corrupted the DB before.
     """
-    global _catch_up_done
+    global _last_discovery
     try:
         from curios.config import SCHEMA_VERSION
         from curios.indexer import discover_transcripts, drain_pending_queue, run_index
 
         unindexed: list[Path] = []
+        seen: set[str] = set()
 
-        if not _catch_up_done:
-            paths = discover_transcripts()
-            _catch_up_done = True
-            unindexed = [
-                p for p in paths
-                if not sentinels.is_indexed(str(p.resolve()), SCHEMA_VERSION)
-            ]
+        def _enqueue(p: Path) -> None:
+            try:
+                ap = str(p.resolve())
+                mtime = int(p.stat().st_mtime)
+            except OSError:
+                return
+            if ap in seen:
+                return
+            seen.add(ap)
+            if not sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+                unindexed.append(p)
 
-        queued = drain_pending_queue()
-        for qp in queued:
-            if not sentinels.is_indexed(str(qp.resolve()), SCHEMA_VERSION):
-                if qp not in unindexed:
-                    unindexed.append(qp)
+        now = time.time()
+        if now - _last_discovery >= DISCOVERY_INTERVAL_S:
+            for p in discover_transcripts():
+                _enqueue(p)
+            _last_discovery = now
+
+        for qp in drain_pending_queue():
+            _enqueue(qp)
+
+        for sp in sentinels.find_stale(SCHEMA_VERSION):
+            _enqueue(Path(sp))
 
         if not unindexed:
             return
-        log.info("catch-up: %d unindexed transcript(s) found, indexing", len(unindexed))
-        files_done, chunks = run_index(unindexed, force=False, dry_run=False)
+        log.info("catch-up: %d transcript(s) to index", len(unindexed))
+        files_done, chunks = run_index(unindexed, force=True, dry_run=False)
         if files_done:
             log.info("catch-up: indexed %d files (%d chunks)", files_done, chunks)
             _reset_client()
@@ -348,26 +358,14 @@ def curios_recap(
     _catch_up_index()
     _require_n_results(n_results)
     resolved = _resolve_project(project)
-    cached = sentinels.get_recent_conversations(
+    rows = sentinels.get_recent_conversations(
         projects=resolved,
         n_results=n_results,
         include_shallow=False,
     )
-    if not cached:
-        coll = _collection()
-        if _retry_chroma(lambda: coll.count()) == 0:
-            body = json.dumps(
-                {
-                    "recap_project": project or "(all)",
-                    "recent_conversations": [],
-                },
-                indent=2,
-            )
-            return _wrap(body)
-        return _recap_from_chroma(project, resolved, n_results)
 
     out: list[dict[str, Any]] = []
-    for row in cached:
+    for row in rows:
         out.append(
             {
                 "conversation_id": row["conversation_id"],
@@ -376,67 +374,6 @@ def curios_recap(
                 "exchanges": row["exchange_count"],
                 "last_active": row["mtime"],
                 "preview": row["preview"],
-            }
-        )
-
-    body = json.dumps(
-        {
-            "recap_project": project or "(all)",
-            "recent_conversations": out,
-        },
-        indent=2,
-    )
-    return _wrap(body)
-
-
-def _recap_from_chroma(project: str | None, resolved: list[str] | None, n_results: int) -> str:
-    coll = _collection()
-    where: dict[str, Any] = {"depth": {"$ne": "shallow"}}
-    if resolved:
-        where = {"$and": [_chroma_project_condition(resolved), where]}
-
-    got = _retry_chroma(
-        lambda: coll.get(
-            where=where,
-            include=["documents", "metadatas"],
-            limit=RECAP_FETCH_LIMIT,
-        )
-    )
-    docs = got.get("documents") or []
-    metas = got.get("metadatas") or []
-
-    by_conv: dict[str, dict[str, Any]] = {}
-    for doc, meta in zip(docs, metas):
-        if not meta:
-            continue
-        cid = str(meta.get("conversation_id") or "")
-        if not cid:
-            continue
-        mtime = int(meta.get("source_mtime") or 0)
-        ci = int(meta.get("chunk_index") or 0)
-        existing = by_conv.get(cid)
-        if existing is None or ci < existing["chunk_index"]:
-            by_conv[cid] = {
-                "conversation_id": cid,
-                "project": meta.get("project"),
-                "topics": _topics_display(meta),
-                "mtime": mtime,
-                "chunk_index": ci,
-                "exchange_count": meta.get("exchange_count"),
-                "text": (doc or "")[:RECAP_PREVIEW_MAX],
-            }
-
-    recent = sorted(by_conv.values(), key=lambda x: -x["mtime"])[:n_results]
-    out: list[dict[str, Any]] = []
-    for entry in recent:
-        out.append(
-            {
-                "conversation_id": entry["conversation_id"],
-                "project": entry["project"],
-                "topics": entry["topics"],
-                "exchanges": entry["exchange_count"],
-                "last_active": entry["mtime"],
-                "preview": entry["text"],
             }
         )
 

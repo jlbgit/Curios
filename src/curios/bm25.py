@@ -7,7 +7,7 @@ import sqlite3
 import threading
 from typing import Iterable
 
-from curios.config import BM25_DB_PATH, BM25_MAX_TERMS, CURIOS_DATA
+from curios.config import BM25_DB_PATH, BM25_MAX_TERMS, ensure_data_dir
 
 log = logging.getLogger("curios.bm25")
 
@@ -45,8 +45,7 @@ USING fts5(
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-        os.chmod(CURIOS_DATA, 0o700)
+        ensure_data_dir()
         path = str(BM25_DB_PATH)
         _conn = sqlite3.connect(path, check_same_thread=False)
         _conn.execute(_TABLE_SQL)

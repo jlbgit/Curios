@@ -20,6 +20,7 @@ def reset_server_globals() -> None:
 
     srv._client_instance = None
     srv._bm25_bootstrapped = False
+    srv._last_discovery = 0.0
 
 
 def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -36,10 +37,8 @@ def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr("curios.config.LOCK_PATH", data / ".index.lock")
     monkeypatch.setattr("curios.config.SCHEMA_STATE_PATH", data / "schema_version.json")
 
-    monkeypatch.setattr("curios.bm25.CURIOS_DATA", data)
     monkeypatch.setattr("curios.bm25.BM25_DB_PATH", data / "bm25.db")
 
-    monkeypatch.setattr("curios.sentinels.CURIOS_DATA", data)
     monkeypatch.setattr("curios.sentinels.SENTINELS_DB_PATH", data / "sentinels.db")
 
     monkeypatch.setattr("curios.maintain.CHROMADB_PATH", chroma_path)

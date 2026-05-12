@@ -24,6 +24,12 @@ CURSOR_HOME = Path(os.environ.get("CURIOS_CURSOR_HOME", Path.home() / ".cursor")
 CURIOS_DATA = Path(os.environ.get("CURIOS_DATA", Path.home() / ".local" / "share" / "curios"))
 
 CHROMADB_PATH = CURIOS_DATA / "chromadb"          # persistent vector store
+
+
+def ensure_data_dir() -> None:
+    """Create CURIOS_DATA with restricted permissions (idempotent)."""
+    CURIOS_DATA.mkdir(parents=True, exist_ok=True)
+    os.chmod(CURIOS_DATA, 0o700)
 TRANSCRIPTS_BASE = CURSOR_HOME / "projects"       # where Cursor writes agent transcripts
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference notes (future)
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
@@ -91,6 +97,20 @@ NOVELTY_THRESHOLD = _env_float("CURIOS_NOVELTY_THRESHOLD", 0.92)
 # Higher catches more potential duplicates but slows indexing.
 # Sensible range: 3–15. Default 8.
 NOVELTY_N_RESULTS = 8
+
+# ── Stale file detection ────────────────────────────────────
+# At catch-up time (MCP tool call), sentinels indexed within this window
+# are checked for mtime changes on disk. Files modified since indexing
+# are re-indexed with force=True. Larger → catches older stale files
+# but stats more rows. Sensible range: 1800–86400. Default 3600 (1 hour).
+# Override: CURIOS_STALE_MAX_AGE_S.
+STALE_MAX_AGE_S = _env_int("CURIOS_STALE_MAX_AGE_S", 86400) # 1 day
+# Seconds between full transcript discovery scans in the MCP server.
+# Each MCP tool call drains the queue and checks stale files; full
+# discovery re-scans all transcript dirs for anything the hook missed.
+# Sensible range: 120–900. Default 300 (5 minutes).
+# Override: CURIOS_DISCOVERY_INTERVAL_S.
+DISCOVERY_INTERVAL_S = _env_int("CURIOS_DISCOVERY_INTERVAL_S", 300)
 
 # ── Topic scoring ───────────────────────────────────────────
 # Each chunk's user+assistant text is scanned for keyword hits from
