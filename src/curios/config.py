@@ -2,9 +2,12 @@ import base64
 import binascii
 import functools
 import json
+import logging
 import os
 import re
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -45,7 +48,7 @@ SENTINELS_DB_PATH = CURIOS_DATA / "sentinels.db"  # per-file index sentinels + r
 COLLECTION_NAME = "curios"              # main chunk collection (embeddings + metadata)
 
 # Bump to force a full re-index (deletes main collection, wipes bm25/sentinels, rewrites schema_version.json).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Indexed topic dimensions (boolean metadata topic_<name> per chunk). Excludes "general".
 ALL_TOPICS: tuple[str, ...] = (
@@ -363,6 +366,11 @@ _TOPIC_KW_EN: dict[str, tuple[str, ...]] = {
         "agreed",
         "conclusion",
         "rationale",
+        "sounds good",
+        "go ahead",
+        "let's do that",
+        "that works",
+        "approved",
     ),
     "architecture": (
         "architecture",
@@ -408,6 +416,10 @@ _TOPIC_KW_EN: dict[str, tuple[str, ...]] = {
         "measured",
         "observed that",
         "confirmed that",
+        "best practice",
+        "gotcha",
+        "official docs",
+        "TIL",
     ),
     "problems": (
         "bug",
@@ -426,6 +438,14 @@ _TOPIC_KW_EN: dict[str, tuple[str, ...]] = {
         "too complex",
         "too complicated",
         "too heavy",
+        "doesn't work",
+        "breaking change",
+        "incompatible",
+        "performance issue",
+        "memory leak",
+        "race condition",
+        "technical debt",
+        "tech debt",
     ),
     "preferences": (
         "i prefer",
@@ -517,7 +537,14 @@ _TOPIC_KW_EN: dict[str, tuple[str, ...]] = {
         "known limitation",
         "missing",
         "incomplete",
-        "inconsistenc",
+        "inconsistency",
+        "inconsistencies",
+        "inconsistent",
+        "work in progress",
+        "WIP",
+        "TBD",
+        "to be determined",
+        "need to figure out",
         "workaround in place",
         "temporary fix",
         "temp fix",
@@ -534,6 +561,13 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "elegimos",
         "nos quedamos con",
         "la opción es",
+        "de acuerdo",
+        "la conclusión",
+        "la estrategia",
+        "está decidido",
+        "vamos a usar",
+        "compromiso",
+        "nos decantamos",
     ),
     "architecture": (
         "arquitectura",
@@ -543,6 +577,14 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "capa",
         "estructura",
         "flujo",
+        "componente",
+        "servicio",
+        "interfaz",
+        "dependencia",
+        "acoplamiento",
+        "esquema",
+        "tubería",
+        "punto de acceso",
     ),
     "learnings": (
         "según",
@@ -555,6 +597,14 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "aprendí que",
         "el resultado",
         "se confirma",
+        "la documentación dice",
+        "resultado clave",
+        "la conclusión es",
+        "buena práctica",
+        "búsqueda web",
+        "resultados de búsqueda",
+        "se observó",
+        "se midió",
     ),
     "problems": (
         "no funciona",
@@ -563,6 +613,14 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "causa raíz",
         "solución alternativa",
         "demasiado complejo",
+        "está roto",
+        "regresión",
+        "excepción",
+        "traza de error",
+        "no funciona correctamente",
+        "cambio incompatible",
+        "deuda técnica",
+        "problema de rendimiento",
     ),
     "preferences": (
         "prefiero",
@@ -575,6 +633,13 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "mi preferencia",
         "no me gusta",
         "nuestro equipo",
+        "preferiría",
+        "siempre hago",
+        "nunca hago",
+        "mantenlo simple",
+        "por favor evitar",
+        "no quiero",
+        "nuestro equipo usa",
     ),
     "ideas": (
         "qué tal si",
@@ -586,6 +651,13 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "una opción",
         "posible enfoque",
         "a largo plazo",
+        "estaría bien tener",
+        "merece explorar",
+        "merece probar",
+        "lluvia de ideas",
+        "objetivo ambicioso",
+        "más adelante",
+        "eventualmente",
     ),
     "open_issues": (
         "falta",
@@ -600,17 +672,31 @@ _TOPIC_KW_ES: dict[str, tuple[str, ...]] = {
         "hay que volver",
         "problema conocido",
         "incompleto",
+        "trabajo en curso",
+        "por determinar",
+        "hay que resolver",
+        "necesita atención",
+        "necesita arreglo",
+        "aplazar",
+        "aplazado",
+        "posponer",
+        "solución temporal",
+        "arreglo temporal",
     ),
     "general": (),
+}
+
+_TOPIC_KW_REGISTRY: dict[str, dict[str, tuple[str, ...]]] = {
+    "en": _TOPIC_KW_EN,
+    "es": _TOPIC_KW_ES,
 }
 
 TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {}
 for _topic in (*ALL_TOPICS, "general"):
     _merged_kw: list[str] = []
-    if "en" in KEYWORD_LANGUAGES:
-        _merged_kw.extend(_TOPIC_KW_EN.get(_topic, ()))
-    if "es" in KEYWORD_LANGUAGES:
-        _merged_kw.extend(_TOPIC_KW_ES.get(_topic, ()))
+    for _lang, _kw_dict in _TOPIC_KW_REGISTRY.items():
+        if _lang in KEYWORD_LANGUAGES:
+            _merged_kw.extend(_kw_dict.get(_topic, ()))
     TOPIC_KEYWORDS[_topic] = tuple(_merged_kw)
 
 
@@ -628,8 +714,15 @@ def get_topic_keywords() -> dict[str, tuple[str, ...]]:
         custom: dict[str, list[str]] = json.loads(
             CUSTOM_KEYWORDS_PATH.read_text(encoding="utf-8")
         )
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to load %s: %s", CUSTOM_KEYWORDS_PATH, exc)
         return TOPIC_KEYWORDS
+    unknown = set(custom) - set(TOPIC_KEYWORDS)
+    if unknown:
+        log.warning(
+            "custom_keywords.json contains unknown topics (ignored): %s",
+            sorted(unknown),
+        )
     merged: dict[str, tuple[str, ...]] = {}
     for topic, defaults in TOPIC_KEYWORDS.items():
         extras = custom.get(topic, [])
