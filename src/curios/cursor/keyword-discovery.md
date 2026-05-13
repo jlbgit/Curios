@@ -28,6 +28,10 @@ Read `src/curios/config.py` and note every phrase already in `TOPIC_KEYWORDS`
 Also check `~/.local/share/curios/custom_keywords.json` for any existing
 user-specific additions (these are merged at runtime via `get_topic_keywords()`).
 
+`CURIOS_KEYWORD_LANGUAGES` (comma-separated, default `en,es`) controls which
+built-in language keyword sets are merged into `TOPIC_KEYWORDS` at import time;
+only languages registered in `_TOPIC_KW_REGISTRY` in `config.py` are available.
+
 ### Step 2: Sample Conversations
 
 Read JSONL transcripts from `~/.cursor/projects/*/agent-transcripts/*/`.
@@ -62,7 +66,11 @@ of the current keywords. Extract the 2-5 word phrases that signal the topic.
 
 ### Step 4: Quality Filters
 
-- **Minimum 2 words** (single words cause false positives)
+- **Phrase length**: prefer multi-word phrases (2+ words). Single words are
+  acceptable only if highly discriminative for the topic and unlikely to appear
+  in general conversation (e.g. `regression`, `WIP`).
+- **Cross-topic check**: verify the phrase is not already a keyword for a
+  different topic (avoid duplicating signal across topics).
 - **Discriminative**: fires primarily for its topic, not universally
 - **Not project-specific**: no single-codebase jargon
 - **Cap 10-15 new phrases per topic**
@@ -100,8 +108,13 @@ default `TOPIC_KEYWORDS` in `config.py` with user-discovered phrases.
 
 If the file already exists, merge new phrases into it (don't overwrite).
 
-Remind the user: keyword changes require re-indexing affected projects:
+Remind the user: keyword changes affect **index-time** topic tagging — re-index
+affected projects:
 
 ```bash
 curios-index --project <name> --force
 ```
+
+`get_topic_keywords()` is cached in the MCP server process; **restart the
+Curios MCP server** so search-time paths (e.g. multi-query augmentation) pick up
+`custom_keywords.json` edits without waiting for a new process.
