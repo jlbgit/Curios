@@ -112,7 +112,7 @@ Remind the user: keyword changes affect **index-time** topic tagging — re-inde
 affected projects:
 
 ```bash
-curios-index --project <name> --force
+curios index --project <name> --force
 ```
 
 `get_topic_keywords()` is cached in the MCP server process; **restart the

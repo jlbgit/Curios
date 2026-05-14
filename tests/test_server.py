@@ -27,6 +27,12 @@ from tests.conftest import topic_meta_false, unwrap_curios_result
 pytestmark = pytest.mark.server
 
 
+@pytest.fixture(autouse=True)
+def _disable_catch_up_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP tools call _catch_up_index() first; avoid touching the host's real ChromaDB."""
+    monkeypatch.setattr("curios.server._catch_up_index", lambda: None)
+
+
 def test_topics_display_empty_meta_is_general():
     assert _topics_display({}) == "general"
 

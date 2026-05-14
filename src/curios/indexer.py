@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import fcntl
 import re
 import json
@@ -25,7 +24,6 @@ from curios.config import (
     COLLECTION_NAME,
     CURIOS_DATA,
     INDEX_LOG_PATH,
-    LAST_INDEXED_PATH,
     LOCK_PATH,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
@@ -51,7 +49,7 @@ from curios.config import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [curios-index] %(levelname)s %(message)s",
+    format="%(asctime)s [curios] %(levelname)s %(message)s",
 )
 log = logging.getLogger("curios.indexer")
 
@@ -629,49 +627,3 @@ def _session_hook() -> None:
 
     queue_for_indexing(path)
     _log_to_index_file(f"queued {path}")
-
-
-def _cli() -> int:
-    ap = argparse.ArgumentParser(description="Curios transcript indexer")
-    ap.add_argument("--file", type=Path, help="Index a single transcript")
-    ap.add_argument("--project", type=str, default=None, help="Limit to one logical project name")
-    ap.add_argument(
-        "--project-name",
-        type=str,
-        default=None,
-        help="Force metadata project name (use with --file when path does not encode project)",
-    )
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--force", action="store_true", help="Ignore sentinels")
-    ap.add_argument("--session-hook", action="store_true", help="Read hook JSON from stdin and spawn indexer")
-    args = ap.parse_args()
-
-    if args.session_hook:
-        _session_hook()
-        return 0
-
-    if args.file:
-        paths = [args.file]
-    else:
-        paths = discover_transcripts(args.project)
-
-    if not paths:
-        log.info("no transcripts found")
-        return 0
-
-    override = args.project_name if args.file else None
-    fd, total = run_index(paths, args.force, args.dry_run, override)
-    log.info("done files=%s chunks=%s", fd, total)
-
-    if not args.dry_run and fd > 0:
-        LAST_INDEXED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LAST_INDEXED_PATH.write_text(
-            json.dumps({"indexed_at": int(time.time()), "files_done": fd, "chunks_written": total}, indent=2),
-            encoding="utf-8",
-        )
-
-    return 0
-
-
-def main() -> None:
-    raise SystemExit(_cli())

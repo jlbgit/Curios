@@ -4,8 +4,9 @@ Benchmark: token cost of Curios MCP vs reading raw conversation files.
 Calls curios_search directly and measures returned text, then compares
 against the cost of reading raw JSONL transcripts for the same project.
 
-Needs populated Chroma (CURIOS_DATA), CURIOS_EVAL_PROJECTS (export or
-`tests/eval/.env`), and JSONL transcripts under TRANSCRIPTS_BASE matching that project.
+Needs populated Chroma (CURIOS_DATA), CURIOS_EVAL_PROJECTS (shell export or
+optional tests/eval/.env if that file exists), and JSONL transcripts under
+TRANSCRIPTS_BASE matching those project names.
 
 Usage:
     uv run pytest -m live -v
@@ -178,7 +179,8 @@ def test_token_savings_vs_oracle() -> None:
     eval_projects = _eval_projects()
     if not eval_projects:
         pytest.skip(
-            "Set CURIOS_EVAL_PROJECTS in tests/eval/.env or export it (comma-separated names)"
+            "Set CURIOS_EVAL_PROJECTS (e.g. export CURIOS_EVAL_PROJECTS=MyApp) "
+            "or add tests/eval/.env with that key (comma-separated project names)"
         )
     project = eval_projects[0]
     conv_chars = project_conversations(project)

@@ -24,13 +24,13 @@ source ~/.local/bin/env   # or open a new shell
 
 ```bash
 uv tool install git+https://github.com/jlbgit/Curios
-which curios curios-server curios-index curios-maintain   # verify
+which curios curios-server   # verify
 ```
 
 ## Step 2 — Configure Cursor
 
 ```bash
-curios cursor install
+curios install
 ```
 
 Merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs this skill to `~/.cursor/skills/`. Safe to re-run.
@@ -40,8 +40,8 @@ Merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the A
 ## Step 3 — Initial index
 
 ```bash
-curios-index          # first run ~25 min; subsequent runs via session hook
-curios-maintain status
+curios index          # first run ~25 min; subsequent runs via session hook
+curios status
 ```
 
 Healthy output shows `chunks > 0` and a recent `last_indexed` date. Future sessions are indexed automatically at session end.

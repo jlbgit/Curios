@@ -3,16 +3,18 @@
 ## Quick reference
 
 ```bash
-uv run pytest                              # all tests (live/benchmark auto-skip if prerequisites missing)
+uv run pytest                              # default: all isolated tests; live/benchmark skipped (opt-in)
+uv run --with pytest-cov pytest --cov=curios  # coverage (pytest-cov via --with; not a default dev dep)
 uv run pytest -m config                    # config, redaction, slugs, keywords
 uv run pytest -m indexing                  # transcript parsing, chunking, queue, catch-up
 uv run pytest -m storage                   # BM25 FTS5 + sentinels SQLite
 uv run pytest -m server                    # MCP retrieval helpers + tool handlers
 uv run pytest -m integration               # E2E: synthetic index → search/recap/related
-uv run pytest -m maintenance               # prune, build-bm25, status/stats/verify
-uv run pytest -m live                      # live-DB only (needs CURIOS_DATA)
-uv run pytest -m benchmark                 # token savings benchmark (needs CURIOS_DATA + tests/eval/.env)
-uv run pytest -m "not live"                # functional only, skip live-DB and benchmark
+uv run pytest -m maintenance               # prune, build-bm25, status/report/verify/repair
+uv run pytest -m cli                       # unified `curios` CLI (install.main argv routing)
+uv run pytest -m live                      # live-DB only (needs stable CURIOS_DATA Chroma)
+uv run pytest -m benchmark                 # token savings benchmark (needs CURIOS_DATA + CURIOS_EVAL_PROJECTS; see below)
+uv run pytest -m "not live"                # same as default (explicit)
 ```
 
 Append `-v` for verbose output or `-s` for live print capture.
@@ -28,7 +30,9 @@ tests/
   test_indexer.py          # transcript parse, chunking, topics, discover, run_index
   test_queue_and_catchup.py# queue, session hook, catch-up indexing
   test_server.py           # retrieval helpers + MCP tool JSON (mocked Chroma)
-  test_maintain.py         # prune, build-bm25, status/stats/verify (tmp Chroma)
+  test_maintain.py         # prune, build-bm25, status/report/verify/repair (tmp Chroma)
+  test_cli.py              # unified `curios` CLI: argv errors, export/import, --help
+  test_install.py          # Cursor integration: staleness, install/uninstall under tmp ~/.cursor
   test_integration.py      # E2E: synthetic transcripts → index → search/recap/related
   test_mcp_interactions.py # live smoke + concurrency (@pytest.mark.live)
   test_token_savings.py    # live token benchmark (@pytest.mark.live @pytest.mark.benchmark)
@@ -41,7 +45,7 @@ tests/
 uv sync
 ```
 
-Default tests use isolated `tmp_path` data dirs (Chroma + SQLite). No `curios-index`
+Default tests use isolated `tmp_path` data dirs (Chroma + SQLite). No `curios index`
 and no API keys required.
 
 ## Markers
@@ -53,17 +57,16 @@ and no API keys required.
 | `storage` | `test_bm25`, `test_sentinels` | BM25 FTS5 sidecar, sentinels recap cache, mtime tracking |
 | `server` | `test_server` | Retrieval helpers, RRF fusion, MCP tool output shape (mocked DB) |
 | `integration` | `test_integration` | Synthetic transcripts → index → search/recap/related |
-| `maintenance` | `test_maintain` | Prune shallow/stale/project, build-bm25, status/stats/verify |
-| `live` | `test_mcp_interactions`, `test_token_savings` | Real CURIOS_DATA index; auto-skips if missing |
-| `benchmark` | `test_token_savings` | Token cost comparison; auto-skips if `tests/eval/.env` missing |
+| `maintenance` | `test_maintain` | Prune shallow/stale/project, build-bm25, status/report/verify/repair |
+| `cli` | `test_cli`, `test_install` | `curios` argv routing; Cursor `~/.cursor/` install/check/uninstall (tmp home) |
+| `live` | `test_mcp_interactions`, `test_token_savings` | Real CURIOS_DATA index; **skipped by default** — run `pytest -m live` |
+| `benchmark` | `test_token_savings` | Token cost comparison; **skipped by default** — run `pytest -m benchmark` |
 
 Combine markers with boolean logic: `uv run pytest -m "indexing or storage"`.
 
 ## Live-DB tests
 
-Both `live`-marked modules hit your real **CURIOS_DATA** index (run `curios-index` first).
-They auto-skip when prerequisites are missing, so `uv run pytest` is always safe.
-To run live tests only:
+Both `live`-marked modules hit your real **CURIOS_DATA** index (run `curios index` first). They are **skipped in the default `uv run pytest`** so a busy or locked Chroma (e.g. during reindex) cannot crash the suite. Opt in explicitly:
 
 ```bash
 uv run pytest -m live -v
@@ -72,21 +75,22 @@ uv run pytest -m live -v
 | File | Needs |
 |---|---|
 | `test_mcp_interactions.py` | Populated Chroma collection only. |
-| `test_token_savings.py` | Chroma + `CURIOS_EVAL_PROJECTS` in `tests/eval/.env` or env + matching JSONL transcripts. |
+| `test_token_savings.py` | Populated **CURIOS_DATA** Chroma; **`CURIOS_EVAL_PROJECTS`** (comma-separated logical project names); JSONL transcripts under **`TRANSCRIPTS_BASE`** for those projects. |
 
-Set `CURIOS_EVAL_PROJECTS` in `tests/eval/.env` (loaded automatically by the token benchmark) or export it (comma-separated project names).
+Export variables in the shell, for example: `export CURIOS_EVAL_PROJECTS=MyApp,OtherRepo`. The benchmark also merges **`tests/eval/.env`** into the environment **if that file exists** (optional convenience when you have a local `tests/eval/` tree).
 
 ## Eval pipeline (`tests/eval/`)
 
 The eval folder is **excluded by default** (`--ignore=tests/eval` in `pyproject.toml`).
-Remote users and CI do not need it. To run evals locally:
+Clones without `tests/eval/` still pass **`uv run pytest`**. If you add or checkout that tree locally:
 
 ```bash
 uv sync --group eval
+# If tests/eval/.env.example exists in your tree: copy to tests/eval/.env and add secrets + CURIOS_EVAL_PROJECTS.
 uv run pytest tests/eval/test_rag_quality.py -s --override-ini="addopts="
 ```
 
-See `tests/eval/.env.example` and `tests/eval/_config.py` for setup.
+Eval scripts read shared constants from **`tests/eval/_config.py`** when present.
 
 ## Gitignored
 

@@ -1,15 +1,20 @@
-"""Tests for curios.maintain: prune, build-bm25, status/stats/verify."""
+"""Tests for curios.maintain: prune, build-bm25, status/report/verify/repair."""
 
 from __future__ import annotations
 
+import io
+import json
 import os
+import tarfile
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from curios import bm25, sentinels
 from curios.config import SCHEMA_VERSION
+from curios.maintain import EXPORT_MANIFEST_VERSION
 from tests.conftest import make_chroma_collection, topic_meta_false
 
 pytestmark = pytest.mark.maintenance
@@ -219,7 +224,7 @@ def test_cmd_build_bm25_wipes_and_refills_under_index_lock(curios_data_env, monk
     assert bm25.search("alpha", ["Q"], 10) == ["q1"]
 
 
-def test_cmd_status_stats_verify_smoke(curios_data_env, capsys):
+def test_cmd_status_report_verify_smoke(curios_data_env, capsys):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
@@ -239,6 +244,11 @@ def test_cmd_status_stats_verify_smoke(curios_data_env, capsys):
     }
     coll.upsert(ids=["id1"], documents=["hello world"], metadatas=[meta])
 
+    schema_path = curios_data_env / "curios_data" / "schema_version.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
+    bm25.insert_many([("id1", "hello world", "S")])
+
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
     x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
@@ -247,8 +257,208 @@ def test_cmd_status_stats_verify_smoke(curios_data_env, capsys):
     out = capsys.readouterr().out
     assert "Chunks" in out
 
-    assert maintain.cmd_stats() == 0
+    assert maintain.cmd_report() == 0
     out2 = capsys.readouterr().out
-    assert "STATS" in out2 or "stats" in out2.lower()
+    assert "REPORT" in out2 or "report" in out2.lower()
 
     assert maintain.cmd_verify() == 0
+    out3 = capsys.readouterr().out
+    assert "total_issues" in out3
+
+
+def test_cmd_repair_dry_run_when_clean(curios_data_env, capsys):
+    from curios import maintain
+
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
+    os.chmod(chroma_path, 0o700)
+    coll = make_chroma_collection(chroma_path)
+    rel = "slug/agent-transcripts/x.jsonl"
+    meta = {
+        "project": "S",
+        "conversation_id": "cid",
+        "depth": "standard",
+        "novelty": "novel",
+        "source_mtime": 1,
+        "source_rel_path": rel,
+        "exchange_count": 2,
+        "chunk_index": 0,
+        **topic_meta_false(),
+    }
+    coll.upsert(ids=["id1"], documents=["hello world"], metadatas=[meta])
+
+    schema_path = curios_data_env / "curios_data" / "schema_version.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
+    bm25.insert_many([("id1", "hello world", "S")])
+
+    x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
+    x.parent.mkdir(parents=True)
+    x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
+
+    assert maintain.cmd_verify() == 0
+    capsys.readouterr()
+    assert maintain.cmd_repair(dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "repair" in out.lower()
+
+
+def test_cmd_repair_writes_missing_schema_file(curios_data_env, capsys):
+    from curios import maintain
+
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
+    os.chmod(chroma_path, 0o700)
+    coll = make_chroma_collection(chroma_path)
+    rel = "slug/agent-transcripts/x.jsonl"
+    meta = {
+        "project": "S",
+        "conversation_id": "cid",
+        "depth": "standard",
+        "novelty": "novel",
+        "source_mtime": 1,
+        "source_rel_path": rel,
+        "exchange_count": 2,
+        "chunk_index": 0,
+        **topic_meta_false(),
+    }
+    coll.upsert(ids=["id1"], documents=["hello world"], metadatas=[meta])
+
+    schema_path = curios_data_env / "curios_data" / "schema_version.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
+    bm25.insert_many([("id1", "hello world", "S")])
+
+    x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
+    x.parent.mkdir(parents=True)
+    x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
+
+    assert maintain.cmd_verify() == 0
+    capsys.readouterr()
+
+    schema_path.unlink()
+    assert maintain.cmd_verify() == 2
+    capsys.readouterr()
+
+    assert maintain.cmd_repair(dry_run=False) == 0
+    assert schema_path.is_file()
+    assert maintain.cmd_verify() == 0
+
+
+def test_cmd_export_transcripts_no_paths_returns_1(curios_data_env, capsys):
+    from curios import maintain
+
+    arch = curios_data_env / "none.tar.gz"
+    assert maintain.cmd_export_transcripts(arch, None) == 1
+    assert "no transcripts" in capsys.readouterr().err
+
+
+def test_cmd_import_transcripts_missing_archive(curios_data_env, capsys):
+    from curios import maintain
+
+    assert maintain.cmd_import_transcripts(Path("/no/such/pack.tar.gz"), None, False, False) == 1
+    assert "missing archive" in capsys.readouterr().err
+
+
+def test_cmd_import_transcripts_archive_missing_manifest(curios_data_env, tmp_path, capsys):
+    from curios import maintain
+
+    p = tmp_path / "emptyish.tar.gz"
+    with tarfile.open(p, "w:gz") as tf:
+        ti = tarfile.TarInfo("readme.txt")
+        ti.size = 2
+        tf.addfile(ti, io.BytesIO(b"ok"))
+    assert maintain.cmd_import_transcripts(p, None, False, False) == 1
+    assert "missing manifest" in capsys.readouterr().err
+
+
+def test_cmd_import_transcripts_invalid_manifest_json(curios_data_env, tmp_path, capsys):
+    from curios import maintain
+
+    p = tmp_path / "badjson.tar.gz"
+    raw = b"{"
+    with tarfile.open(p, "w:gz") as tf:
+        ti = tarfile.TarInfo("manifest.json")
+        ti.size = len(raw)
+        tf.addfile(ti, io.BytesIO(raw))
+    assert maintain.cmd_import_transcripts(p, None, False, False) == 1
+    err = capsys.readouterr().err
+    assert "invalid manifest" in err or "JSON" in err
+
+
+def test_cmd_import_transcripts_unsupported_manifest_version(curios_data_env, tmp_path, capsys):
+    from curios import maintain
+
+    manifest = {"version": 999, "files": [{"path": "transcripts/u.jsonl", "project": "P", "conversation_id": "u", "mtime": 1}]}
+    p = tmp_path / "wrongver.tar.gz"
+    body = json.dumps(manifest).encode("utf-8")
+    with tarfile.open(p, "w:gz") as tf:
+        ti = tarfile.TarInfo("manifest.json")
+        ti.size = len(body)
+        tf.addfile(ti, io.BytesIO(body))
+    assert maintain.cmd_import_transcripts(p, None, False, False) == 1
+    assert "unsupported manifest version" in capsys.readouterr().err
+
+
+def test_cmd_import_transcripts_empty_files_list(curios_data_env, tmp_path, capsys):
+    from curios import maintain
+
+    manifest = {"version": EXPORT_MANIFEST_VERSION, "files": []}
+    p = tmp_path / "nofiles.tar.gz"
+    body = json.dumps(manifest).encode("utf-8")
+    with tarfile.open(p, "w:gz") as tf:
+        ti = tarfile.TarInfo("manifest.json")
+        ti.size = len(body)
+        tf.addfile(ti, io.BytesIO(body))
+    assert maintain.cmd_import_transcripts(p, None, False, False) == 1
+    assert "manifest has no files" in capsys.readouterr().err
+
+
+def test_cmd_import_transcripts_manifest_refs_missing_member(curios_data_env, tmp_path, capsys):
+    from curios import maintain
+
+    manifest = {
+        "version": EXPORT_MANIFEST_VERSION,
+        "files": [
+            {
+                "path": "transcripts/aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee.jsonl",
+                "project": "P",
+                "conversation_id": "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee",
+                "mtime": 1,
+            }
+        ],
+    }
+    p = tmp_path / "dangling.tar.gz"
+    body = json.dumps(manifest).encode("utf-8")
+    with tarfile.open(p, "w:gz") as tf:
+        ti = tarfile.TarInfo("manifest.json")
+        ti.size = len(body)
+        tf.addfile(ti, io.BytesIO(body))
+    assert maintain.cmd_import_transcripts(p, None, False, False) == 1
+    err = capsys.readouterr().err
+    assert "missing or unsafe member" in err or "references" in err
+
+
+def test_cmd_import_transcripts_dry_run(curios_data_env, capsys):
+    from curios import maintain
+
+    agent = curios_data_env / "projects" / "exp-slug" / "agent-transcripts"
+    agent.mkdir(parents=True)
+    cid = "cccccccc-cccc-4ccc-cccc-cccccccccccc"
+    (agent / f"{cid}.jsonl").write_text(
+        '{"role":"user","message":{"content":"a"}}\n{"role":"assistant","message":{"content":"b"}}\n',
+        encoding="utf-8",
+    )
+    arch = curios_data_env / "one.tar.gz"
+    assert maintain.cmd_export_transcripts(arch, None) == 0
+    capsys.readouterr()
+    assert maintain.cmd_import_transcripts(arch, "LogicalName", True, False) == 0
+    assert "dry-run" in capsys.readouterr().out.lower()
+
+
+def test_collect_verify_report_missing_chroma_dir(curios_data_env, monkeypatch):
+    from curios import maintain
+
+    missing = curios_data_env / "chromadb_absent"
+    monkeypatch.setattr(maintain, "CHROMADB_PATH", missing)
+    rep = maintain.collect_verify_report()
+    assert rep.chroma_dir_missing
+    assert rep.chroma_collection_missing is False

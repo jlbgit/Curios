@@ -289,7 +289,7 @@ def get_embedding_function():
     )
 
 
-# ── CLI display (curios-maintain stats/status) ───────────────
+# ── CLI display (curios report / status) ─────────────────────
 # Character width for horizontal rulers and table formatting.
 CLI_RULER_WIDTH = 62
 # Max conversations listed in the shallow / fully-incremental sections.
