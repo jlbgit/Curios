@@ -8,7 +8,13 @@ import threading
 import time
 from typing import Any
 
-from curios.config import RECAP_PREVIEW_MAX, SENTINELS_DB_PATH, STALE_MAX_AGE_S, ensure_data_dir
+from curios.config import (
+    RECAP_PREVIEW_MAX,
+    SENTINELS_DB_PATH,
+    STALE_MAX_AGE_S,
+    ensure_data_dir,
+    set_owner_only_permissions,
+)
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
@@ -48,10 +54,7 @@ def _get_conn() -> sqlite3.Connection:
             _conn.commit()
         except sqlite3.OperationalError:
             pass
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        set_owner_only_permissions(path)
     return _conn
 
 

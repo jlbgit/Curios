@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from curios.config import SCHEMA_VERSION, import_slug_for_project
+from curios.config import SCHEMA_VERSION, import_slug_for_project, set_owner_only_permissions
 from tests.conftest import make_chroma_collection, topic_meta_false
 
 pytestmark = pytest.mark.cli
@@ -96,7 +95,7 @@ def test_cli_export_import_round_trip(curios_data_env, monkeypatch: pytest.Monke
     )
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     make_chroma_collection(chroma_path)
 
     arch = curios_data_env / "pack.tar.gz"
@@ -125,7 +124,7 @@ def test_cli_verify_runs(curios_data_env, monkeypatch: pytest.MonkeyPatch) -> No
     from curios import bm25
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     rel = "slug/agent-transcripts/x.jsonl"
     meta = {

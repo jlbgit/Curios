@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sqlite3
 import threading
 from typing import Iterable
 
-from curios.config import BM25_DB_PATH, BM25_MAX_TERMS, ensure_data_dir
+from curios.config import BM25_DB_PATH, BM25_MAX_TERMS, ensure_data_dir, set_owner_only_permissions
 
 log = logging.getLogger("curios.bm25")
 
@@ -50,10 +49,7 @@ def _get_conn() -> sqlite3.Connection:
         _conn = sqlite3.connect(path, check_same_thread=False)
         _conn.execute(_TABLE_SQL)
         _conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        set_owner_only_permissions(path)
     return _conn
 
 

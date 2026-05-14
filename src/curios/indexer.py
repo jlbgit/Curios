@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import re
 import json
 import logging
@@ -44,6 +43,7 @@ from curios.config import (
     extract_project_name,
     get_embedding_function,
     redact_secrets,
+    set_owner_only_permissions,
     transcript_relative_path,
 )
 
@@ -62,13 +62,35 @@ NOVELTY_DISTANCE_MAX = 1.0 - NOVELTY_THRESHOLD
 def index_lock() -> Iterator[None]:
     ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
-    fp = open(LOCK_PATH, "a+")
-    try:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-        fp.close()
+    if sys.platform == "win32":
+        import msvcrt
+
+        fp = open(LOCK_PATH, "a+b")
+        fp.flush()
+        fp.seek(0)
+        try:
+            msvcrt.locking(fp.fileno(), msvcrt.LK_LOCK, 1)
+            yield
+        finally:
+            try:
+                fp.seek(0)
+                msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            fp.close()
+    else:
+        import fcntl
+
+        fp = open(LOCK_PATH, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fp.close()
 
 
 def _ensure_schema(client: chromadb.PersistentClient) -> None:
@@ -494,10 +516,7 @@ def run_index(
 ) -> tuple[int, int]:
     ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(CHROMADB_PATH, 0o700)
-    except OSError:
-        pass
+    set_owner_only_permissions(CHROMADB_PATH)
     client = chromadb.PersistentClient(path=str(CHROMADB_PATH))
     _ensure_schema(client)
     coll = _get_collections(client)
@@ -532,7 +551,7 @@ def _log_to_index_file(msg: str) -> None:
     """Append a line to index.log from the hook process (before subprocess spawn)."""
     try:
         CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-        with open(INDEX_LOG_PATH, "a") as f:
+        with open(INDEX_LOG_PATH, "a", encoding="utf-8") as f:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"{ts} [curios-hook] {msg}\n")
     except OSError:
@@ -545,7 +564,7 @@ PENDING_QUEUE_PATH = CURIOS_DATA / "pending_index.txt"
 def queue_for_indexing(path: Path) -> None:
     """Append a transcript path to the pending queue (no ChromaDB access)."""
     CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-    with open(PENDING_QUEUE_PATH, "a") as f:
+    with open(PENDING_QUEUE_PATH, "a", encoding="utf-8") as f:
         f.write(str(path.resolve()) + "\n")
 
 
@@ -563,7 +582,7 @@ def drain_pending_queue() -> list[Path]:
     except OSError:
         return []
     try:
-        lines = processing.read_text().splitlines()
+        lines = processing.read_text(encoding="utf-8").splitlines()
         processing.unlink(missing_ok=True)
     except OSError:
         return []
@@ -585,7 +604,7 @@ def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:
     if isinstance(roots, str):
         roots = [roots]
     for root in roots:
-        slug = root.replace("/", "-").lstrip("-")
+        slug = str(root).replace("\\", "-").replace("/", "-").lstrip("-")
         for candidate in (
             TRANSCRIPTS_BASE / slug / "agent-transcripts" / conv_id / f"{conv_id}.jsonl",
             TRANSCRIPTS_BASE / slug / "agent-transcripts" / f"{conv_id}.jsonl",
