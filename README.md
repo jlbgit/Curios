@@ -1,6 +1,6 @@
 # Curios
 
-**v0.5.3**
+**v0.6.0**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -41,21 +41,19 @@ Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` in
 uv tool install git+https://github.com/jlbgit/Curios
 ```
 
-This creates an isolated virtual environment and places four entry points on your PATH at `~/.local/bin/`:
+This creates an isolated virtual environment and places two user-facing entry points on your PATH at `~/.local/bin/` (plus `curios-server`, which Cursor invokes directly):
 
 
 | Command           | Purpose                                                         |
 | ----------------- | --------------------------------------------------------------- |
-| `curios`          | Manage Cursor integration (`install`, `uninstall`, `check`)     |
+| `curios`          | Unified CLI: IDE integration, indexing, maintenance, recovery   |
 | `curios-server`   | MCP server (started by Cursor)                                  |
-| `curios-index`    | Transcript indexer + session hook                               |
-| `curios-maintain` | Maintenance CLI (status, stats, verify, reindex, prune, export) |
 
 
 ### Step 2: Configure Cursor
 
 ```bash
-curios cursor install
+curios install
 ```
 
 This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs two skills to `~/.cursor/skills/`:
@@ -67,19 +65,19 @@ Only the `curios` entries are touched — other MCP servers, hooks, and rules ar
 
 **Restart Cursor** after running this.
 
-To undo all changes: `curios cursor uninstall`.
+`curios uninstall` removes only Curios wiring inside Cursor (MCP entry, `sessionEnd` hook, `rules/curios.mdc`, and the two packaged skills). It does **not** remove the `uv` tool, binaries, or anything under your data directory (`CURIOS_DATA`, default `~/.local/share/curios/`). For a complete removal, follow [Uninstallation](#uninstallation).
 
-After any `uv tool install --reinstall`, re-run `curios cursor install` to keep the deployed rule and skills in sync with the new package. You can check whether they are current at any time:
+After any `uv tool install --reinstall`, re-run `curios install` to keep the deployed rule and skills in sync with the new package. You can check whether they are current at any time:
 
 ```bash
-curios cursor check
+curios check
 ```
 
 ### Step 3: Initial indexing
 
 ```bash
-curios-index          # first run ~30 min depending on your machine; subsequent runs happen automatically via session hook
-curios-maintain status
+curios index            # first run ~30 min depending on your machine; subsequent runs happen automatically via session hook
+curios status
 ```
 
 After this, indexing happens automatically at the end of each Cursor session via the hook.
@@ -102,7 +100,7 @@ Then open any Cursor project and say: *"Install Curios for me."*
 git clone https://github.com/jlbgit/Curios ~/Applications/Curios
 cd ~/Applications/Curios
 uv tool install -e ~/Applications/Curios
-curios cursor install
+curios install
 
 # After code changes, reinstall to update entry points
 uv tool install --reinstall -e ~/Applications/Curios
@@ -120,7 +118,7 @@ protection** on the repo (**Settings > Code security and analysis**).
 If you need to configure Cursor by hand, Curios requires full absolute paths to its binaries because Cursor's desktop process does not inherit your shell's PATH. Find them first:
 
 ```bash
-which curios-server curios-index
+which curios curios-server
 ```
 
 `**~/.cursor/mcp.json**` — add a `curios` entry to `mcpServers`:
@@ -143,7 +141,7 @@ which curios-server curios-index
   "hooks": {
     "sessionEnd": [
       {
-        "command": "/FULL/PATH/TO/.local/bin/curios-index --session-hook",
+        "command": "/FULL/PATH/TO/.local/bin/curios index --session-hook",
         "timeout": 10
       }
     ]
@@ -151,7 +149,7 @@ which curios-server curios-index
 }
 ```
 
-The hook reads `transcript_path` from Cursor's JSON payload on stdin, spawns the indexer as a detached background process, and returns immediately — well within the 10-second timeout. The child process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
+The hook reads `transcript_path` from Cursor's JSON payload on stdin, queues the transcript for the MCP server's catch-up indexer, and returns immediately — well within the 10-second timeout. The hook process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed by a full indexer run, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
 
 `**~/.cursor/rules/curios.mdc**` — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: true` so the AI proactively searches conversation memory when context would help (e.g. a session starts with a question that requires prior decisions or history). Set to `alwaysApply: false` if you prefer the rule to load only when explicitly referenced — this reduces token overhead in sessions where memory is not needed, but means the agent won't search Curios unless you mention it.
 
@@ -201,7 +199,7 @@ To use a custom data location, export the variable before running any curios com
 
 ```bash
 export CURIOS_DATA=~/my-curios-data
-curios-index
+curios index
 ```
 
 For the MCP server and session hook (which are launched by Cursor, not your shell), set environment variables in `~/.cursor/mcp.json` (replace `/your/custom/curios-data` with your actual path):
@@ -249,21 +247,44 @@ This file lets you map specific slugs to the project name you want. Format: a JS
 }
 ```
 
-To find a slug, look at the directory names under `~/.cursor/projects/`, or run `curios-maintain stats` and check which project names appear. If a name looks wrong, find the corresponding slug and add an override.
+To find a slug, look at the directory names under `~/.cursor/projects/`, or run `curios report` and check which project names appear. If a name looks wrong, find the corresponding slug and add an override.
 
 ## Uninstallation
 
+### Cursor only (`curios uninstall`)
+
+Removes the Curios MCP server entry from `~/.cursor/mcp.json`, Curios `sessionEnd` hooks from `~/.cursor/hooks.json`, `~/.cursor/rules/curios.mdc`, and the `curios-install` / `curios-keyword-discovery` skill directories. Other MCP servers, hooks, and rules are left alone. Restart Cursor afterward.
+
 ```bash
-curios cursor uninstall    # remove MCP, hook, rule, and skills from ~/.cursor/
-uv tool uninstall curios   # remove binaries and isolated venv
-rm -rf ~/.local/share/curios  # remove ChromaDB, preferences, and indexing state
+curios uninstall
 ```
 
-Restart Cursor after the first command.
+Rewriting JSON configs may leave `mcp.json.bak` / `hooks.json.bak` next to those files; delete them manually if you do not want backups.
+
+### Full uninstall (Curios off the machine)
+
+Do all of the following, in order:
+
+1. **Disconnect from Cursor** (above).
+2. **Remove the `uv` tool** (binaries and its isolated environment):
+
+   ```bash
+   uv tool uninstall curios
+   ```
+
+3. **Delete the data directory** (ChromaDB, SQLite indexes, logs, `custom_keywords.json`, `project_overrides.json`, etc.). Default path:
+
+   ```bash
+   rm -rf ~/.local/share/curios
+   ```
+
+   If you use a custom location, remove that tree instead (`CURIOS_DATA`).
+
+**Not covered by Curios itself:** environment variables (`CURIOS_*`, etc.) in shell profiles; any rules or skills you copied by hand outside the paths `curios install` manages; Cursor’s own per-project MCP cache under `~/.cursor/projects/` (refreshes over time or after restart).
 
 ## MCP Tools
 
-Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios-maintain status` and edit `preferences.md` directly instead.
+Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios status` and edit `preferences.md` directly instead.
 
 
 | Tool             | Purpose                                                                                            | When to use                                                           |
@@ -361,39 +382,45 @@ Default threshold is 2 for all topics (overridden per-topic in `TOPIC_MIN_HITS`)
 
 Keywords include Spanish terms and informal expressions.
 
-## Indexer CLI
+## CLI (`curios`)
+
+Run `curios --help` for the full command tree. Common commands:
+
+### Indexer
 
 ```bash
-curios-index                          # Index all new transcripts (sentinel skip)
-curios-index --file PATH              # One file (used by sessionEnd hook)
-curios-index --project NAME           # Filter by project slug
-curios-index --dry-run                # Preview without writing
-curios-index --force                  # Ignore sentinels, re-index everything
-curios-index --file PATH --project-name MyApp   # Force logical project when path is outside ~/.cursor/projects/
+curios index                          # Index all new transcripts (sentinel skip)
+curios index --file PATH              # Queue path (session hook uses this)
+curios index --project NAME           # Filter by project slug
+curios index --rebuild                # Wipe vector index and rebuild from all transcripts (requires typing yes; cannot use --project)
+curios index --dry-run                # Preview without writing
+curios index --force                  # Ignore sentinels, re-index everything
+curios index --file PATH --project-name MyApp   # Force logical project when path is outside ~/.cursor/projects/
 ```
 
-## Maintenance CLI
+### Maintenance
 
 ```bash
-curios-maintain status                                    # Compact human-readable health check
-curios-maintain stats                                     # Full human-readable report (see below)
-curios-maintain verify                                    # Metadata + orphaned sources + permissions
-curios-maintain reindex [--project NAME]                  # Wipe DB and rebuild (requires "yes")
-curios-maintain prune --shallow                           # Delete shallow chunks
-curios-maintain prune --stale                             # Delete orphaned chunks
-curios-maintain prune --project X --before YYYY-MM-DD     # Delete old chunks for a project
-curios-maintain export --output curios-transcripts.tar.gz              # Raw .jsonl + manifest.json
-curios-maintain export --output curios-one-project.tar.gz --project X  # Filter by project
-curios-maintain import --input curios-transcripts.tar.gz               # Unpack under ~/.cursor/projects/curios-import-*/
-curios-maintain import --input archive.tar.gz --project MyApp          # Force logical project name
-curios-maintain import --input archive.tar.gz --dry-run                # Validate only
+curios status                                    # Compact human-readable health check
+curios report                                    # Full human-readable report (see below)
+curios verify                                    # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, perms, schema file)
+curios repair                                    # Auto-fix BM25 drift, orphan recap/sentinel rows, missing schema_version.json
+curios repair --dry-run                          # Show what repair would do
+curios prune --shallow                           # Delete shallow chunks
+curios prune --stale                             # Delete orphaned chunks
+curios prune --before YYYY-MM-DD --project X     # Delete old chunks for a project (mtime cutoff)
+curios export curios-transcripts.tar.gz          # Raw .jsonl + manifest.json
+curios export curios-one-project.tar.gz --project X  # Filter by project
+curios import curios-transcripts.tar.gz          # Unpack under ~/.cursor/projects/curios-import-*/
+curios import archive.tar.gz --project MyApp     # Force logical project name
+curios import archive.tar.gz --dry-run           # Validate only
 ```
 
 ### `status` output
 
-A compact human-readable summary — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `stats` for the full breakdown.
+A compact human-readable summary — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `curios report` for the full breakdown.
 
-### `stats` output
+### `report` output
 
 A formatted report with sections:
 
@@ -422,21 +449,95 @@ An informal RAG evaluation was run against a personal conversation corpus (8,493
 
 ## Testing
 
+### Quick reference
+
 ```bash
 uv sync                                    # install dev dependencies
-uv run pytest                              # all tests (live/benchmark auto-skip if prerequisites missing)
+uv run pytest                              # default: all isolated tests; live/benchmark skipped (opt-in)
+uv run --with pytest-cov pytest --cov=curios  # coverage (pytest-cov via --with; not a default dev dep)
 uv run pytest -m config                    # config, redaction, slugs, keywords
 uv run pytest -m indexing                  # transcript parsing, chunking, queue, catch-up
-uv run pytest -m storage                   # BM25 + sentinels SQLite
+uv run pytest -m storage                   # BM25 FTS5 + sentinels SQLite
 uv run pytest -m server                    # MCP retrieval helpers + tool handlers
 uv run pytest -m integration               # E2E: synthetic index → search/recap/related
-uv run pytest -m maintenance               # prune, build-bm25, status/stats/verify
-uv run pytest -m live                      # live-DB only (needs populated CURIOS_DATA)
-uv run pytest -m benchmark                 # token savings benchmark (needs CURIOS_DATA + tests/eval/.env)
-uv run pytest -m "not live"                # functional only, skip live-DB and benchmark
+uv run pytest -m maintenance               # prune, build-bm25, status/report/verify/repair
+uv run pytest -m cli                       # unified `curios` CLI (install.main argv routing)
+uv run pytest -m live                      # live-DB only (needs stable CURIOS_DATA Chroma)
+uv run pytest -m benchmark                 # token savings benchmark (needs CURIOS_DATA + CURIOS_EVAL_PROJECTS; see Live-DB tests below)
+uv run pytest -m "not live"                # same as default (explicit)
 ```
 
-The `tests/eval/` directory (RAG quality pipeline with DeepEval) is excluded by default and not required. See [`tests/README.md`](tests/README.md) for the full test reference.
+Append `-v` for verbose output or `-s` for live print capture. Combine markers with boolean logic, for example: `uv run pytest -m "indexing or storage"`.
+
+### Layout
+
+```
+tests/
+  conftest.py              # shared fixtures and helpers
+  test_config.py           # config: redaction, slugs, paths, keywords, env overrides
+  test_bm25.py             # SQLite FTS5 sidecar
+  test_sentinels.py        # SQLite sentinels + recap cache
+  test_indexer.py          # transcript parse, chunking, topics, discover, run_index
+  test_queue_and_catchup.py# queue, session hook, catch-up indexing
+  test_server.py           # retrieval helpers + MCP tool JSON (mocked Chroma)
+  test_maintain.py         # prune, build-bm25, status/report/verify/repair (tmp Chroma)
+  test_cli.py              # unified `curios` CLI: argv errors, export/import, --help
+  test_install.py          # Cursor integration: staleness, install/uninstall under tmp ~/.cursor
+  test_integration.py      # E2E: synthetic transcripts → index → search/recap/related
+  test_mcp_interactions.py # live smoke + concurrency (@pytest.mark.live)
+  test_token_savings.py    # live token benchmark (@pytest.mark.live @pytest.mark.benchmark)
+  eval/                    # RAG quality pipeline (optional — see Eval pipeline below)
+```
+
+Default runs use isolated `tmp_path` data dirs (Chroma + SQLite). No `curios index` and no API keys required.
+
+### Markers
+
+| Marker | Files | What it tests |
+| --- | --- | --- |
+| `config` | `test_config` | Redaction, project slugs, paths, keywords, env overrides |
+| `indexing` | `test_indexer`, `test_queue_and_catchup` | Transcript parsing, chunking, topics, discovery, queue, session hook, catch-up |
+| `storage` | `test_bm25`, `test_sentinels` | BM25 FTS5 sidecar, sentinels recap cache, mtime tracking |
+| `server` | `test_server` | Retrieval helpers, RRF fusion, MCP tool output shape (mocked DB) |
+| `integration` | `test_integration` | Synthetic transcripts → index → search/recap/related |
+| `maintenance` | `test_maintain` | Prune shallow/stale/project, build-bm25, status/report/verify/repair |
+| `cli` | `test_cli`, `test_install` | `curios` argv routing; Cursor `~/.cursor/` install/check/uninstall (tmp home) |
+| `live` | `test_mcp_interactions`, `test_token_savings` | Real `CURIOS_DATA` index; **skipped by default** — run `pytest -m live` |
+| `benchmark` | `test_token_savings` | Token cost comparison; **skipped by default** — run `pytest -m benchmark` |
+
+### Live-DB tests
+
+Both `live`-marked modules hit your real **CURIOS_DATA** index (run `curios index` first). They are **skipped in the default `uv run pytest`** so a busy or locked Chroma (for example during reindex) cannot crash the suite. Opt in explicitly:
+
+```bash
+uv run pytest -m live -v
+```
+
+| File | Needs |
+| --- | --- |
+| `test_mcp_interactions.py` | Populated Chroma collection only. |
+| `test_token_savings.py` | Populated **CURIOS_DATA** Chroma; **`CURIOS_EVAL_PROJECTS`** (comma-separated logical project names); JSONL transcripts under **`TRANSCRIPTS_BASE`** for those projects. |
+
+Export variables in the shell, for example: `export CURIOS_EVAL_PROJECTS=MyApp,OtherRepo`. The benchmark also merges **`tests/eval/.env`** into the environment **if that file exists** (optional convenience when you have a local `tests/eval/` tree).
+
+### Eval pipeline (`tests/eval/`)
+
+The eval folder is **excluded by default** (`--ignore=tests/eval` in `pyproject.toml`). Clones without `tests/eval/` still pass **`uv run pytest`**. If you add or checkout that tree locally:
+
+```bash
+uv sync --group eval
+# If tests/eval/.env.example exists in your tree: copy to tests/eval/.env and add secrets + CURIOS_EVAL_PROJECTS.
+uv run pytest tests/eval/test_rag_quality.py -s --override-ini="addopts="
+```
+
+Eval scripts read shared constants from **`tests/eval/_config.py`** when present.
+
+### Gitignored (tests-related)
+
+| Path | Reason |
+| --- | --- |
+| `tests/eval/.env` | API key + project names |
+| `tests/eval/fixtures/` | Generated eval fixtures |
 
 Contributions improving relevancy and recall are very welcome!
 

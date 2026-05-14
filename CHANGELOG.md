@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 — 2026-05-14
+
+### Migration
+- **`SCHEMA_VERSION` 6:** keyword and metadata changes bump the on-disk schema. After upgrading, run `curios index --rebuild` once (or let the normal schema-mismatch path wipe and rebuild) so chunk topic tags and indices match the new defaults.
+
+### Entry points (breaking)
+- **Removed standalone CLIs:** `curios-index` and `curios-maintain` are no longer installed as separate console scripts. All indexing and maintenance run through **`curios …`** (same flags as before, under `curios index`, `curios status`, `curios prune`, etc.). Update shell aliases, CI, and Cursor `hooks.json` if they still call `curios-index` or `curios-maintain`.
+- **Indexer logging:** log prefix is now `[curios]` instead of `[curios-index]`.
+
+### CLI (breaking)
+- **Unified top-level commands:** `curios install` / `uninstall` / `check` (replaces `curios cursor …`). Default `curios install` targets Cursor; optional `IDE` positional reserved for future editors.
+- **Index rebuild:** `curios reindex` removed — use `curios index --rebuild` (all projects; cannot combine with `--project`).
+- **Verify & repair:** `curios verify` (read-only full audit: Chroma metadata, BM25 row parity vs Chroma, recap/sentinel drift, DB file permissions, `schema_version.json`). `curios repair` runs the same checks then auto-fixes BM25 drift, orphan recap/sentinel rows, and missing `schema_version.json`; `curios repair --dry-run` previews actions.
+- **Prune:** `--before YYYY-MM-DD` is mutually exclusive with `--shallow` / `--stale` and requires `--project` (fixes previously unreachable `--project` + `--before` combination).
+- **Import/export:** archive path is a positional argument: `curios export FILE` and `curios import FILE` (replaces `--output` / `--input`).
+- **Help:** root `--help` includes an examples epilog; subcommand descriptions state required options more clearly.
+
+### Topic keywords & custom keywords
+- **Expanded default EN/ES phrases** across decisions, architecture, learnings, problems, preferences, ideas, and open_issues (e.g. approval/agreement cues, regression and debt language, WIP/TBD-style open issues, richer Spanish architecture and problem vocabulary).
+- **Typo fix:** `open_issues` default list replaces the truncated `"inconsistenc"` stem with `inconsistency` / `inconsistencies` / `inconsistent` (word-boundary matching applies).
+- **`_TOPIC_KW_REGISTRY`:** per-language dicts merged in registry order so adding languages does not require duplicating merge logic.
+- **`custom_keywords.json`:** invalid JSON or unreadable files log a warning and fall back to defaults; unknown top-level topic keys log a warning and are ignored.
+
+### Documentation
+- **Testing:** full test reference (layout, markers, live/benchmark, `tests/eval/`, gitignored paths) lives in the root README **Testing** section only; duplicate `tests/README.md` removed.
+- **`keyword-discovery` skill:** `keyword-discovery.md` updated for the unified CLI and current workflows.
+
+### Tests
+- **`pytest` marker `cli`:** `test_cli.py` (argv routing, export/import, `--help`) and `test_install.py` (install/check/uninstall against a temporary `~/.cursor`).
+- **Expanded coverage** for maintenance and install paths aligned with the unified CLI.
+
 ## 0.5.3 — 2026-05-12
 
 ### Indexing & concurrency

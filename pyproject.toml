@@ -1,6 +1,6 @@
 [project]
 name = "curios"
-version = "0.5.3"
+version = "0.6.0"
 description = "Cross-project transcript memory for Cursor IDE"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,8 +25,6 @@ dependencies = [
 [project.scripts]
 curios = "curios.install:main"
 curios-server = "curios.server:main"
-curios-index = "curios.indexer:main"
-curios-maintain = "curios.maintain:main"
 
 [project.urls]
 Homepage = "https://github.com/jlbgit/Curios"
@@ -38,7 +36,7 @@ Changelog = "https://github.com/jlbgit/Curios/blob/main/CHANGELOG.md"
 # producing no visible progress during long eval runs. Disable it globally
 # since we don't use the Confident AI integration.
 # --ignore=tests/eval: eval pipeline is optional (requires deepeval + API keys)
-# Live tests auto-skip when prerequisites (CURIOS_DATA, env vars) are missing.
+# Live/benchmark tests are skipped by default (see tests/conftest.py); use -m live / -m benchmark.
 addopts = "-p no:deepeval --ignore=tests/eval"
 pythonpath = ["src"]
 markers = [
@@ -47,9 +45,10 @@ markers = [
     "storage: BM25 FTS5 and sentinels SQLite databases",
     "server: MCP server retrieval helpers and tool handlers",
     "integration: end-to-end synthetic indexing and search",
-    "maintenance: prune, build-bm25, status/stats/verify",
-    "live: uses real CURIOS_DATA index; run with pytest -m live",
-    "benchmark: live-DB token benchmark (subset of live)",
+    "maintenance: prune, build-bm25, status/report/verify/repair",
+    "cli: unified curios install.main() argparse routing and export/import smoke",
+    "live: real CURIOS_DATA; opt-in with pytest -m live (skipped by default in conftest)",
+    "benchmark: live-DB token benchmark; opt-in with pytest -m benchmark (skipped by default)",
 ]
 
 [build-system]
