@@ -161,6 +161,22 @@ def delete_sentinel(abs_path: str) -> None:
         conn.commit()
 
 
+def iter_sentinel_abs_paths() -> list[str]:
+    """All abs_path values in the sentinels table (may include missing files)."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute("SELECT abs_path FROM sentinels").fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
+def iter_cached_conversation_ids() -> list[str]:
+    """All conversation_id rows in the recap conversations cache."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
 def delete_conversations(conversation_ids: list[str]) -> None:
     """Remove recap cache rows for deleted conversations."""
     if not conversation_ids:

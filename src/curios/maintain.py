@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
+import time
 import tarfile
 from io import BytesIO
 from collections import Counter, defaultdict
@@ -31,10 +29,12 @@ from curios.config import (
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
     SHALLOW_THRESHOLD,
+    SENTINELS_DB_PATH,
     TRANSCRIPTS_BASE,
     conversation_id_from_path,
     extract_project_name,
     import_slug_for_project,
+    transcript_relative_path,
 )
 from curios.indexer import PENDING_QUEUE_PATH, discover_transcripts, index_lock, run_index
 
@@ -43,6 +43,179 @@ _MAX_LIST = CLI_MAX_LIST_ITEMS
 
 EXPORT_MANIFEST_VERSION = 1
 EXPORT_TRANSCRIPTS_DIR = "transcripts"
+
+
+@dataclass
+class VerifyReport:
+    """Structured result of collect_verify_report()."""
+
+    chroma_dir_missing: bool = False
+    chroma_collection_missing: bool = False
+    chroma_perm_issues: int = 0
+    bm25_perm_issues: int = 0
+    sentinels_perm_issues: int = 0
+    schema_missing: bool = False
+    schema_version_mismatch: bool = False
+    chroma_chunk_count: int = 0
+    bm25_row_count: int = 0
+    bm25_drift: bool = False
+    meta_missing: int = 0
+    meta_missing_fields: int = 0
+    orphan_chunks: int = 0
+    orphan_conv_cache: list[str] = field(default_factory=list)
+    orphan_sentinel_paths: list[str] = field(default_factory=list)
+
+    def total_issues(self) -> int:
+        n = 0
+        if self.chroma_dir_missing or self.chroma_collection_missing:
+            n += 1
+        n += self.chroma_perm_issues + self.bm25_perm_issues + self.sentinels_perm_issues
+        n += int(self.schema_missing) + int(self.schema_version_mismatch)
+        n += int(self.bm25_drift)
+        n += self.meta_missing + self.meta_missing_fields + self.orphan_chunks
+        n += len(self.orphan_conv_cache) + len(self.orphan_sentinel_paths)
+        return n
+
+
+def _path_perm_issue(path: Path) -> bool:
+    if not path.exists():
+        return False
+    mode = path.stat().st_mode
+    return bool(mode & 0o077)
+
+
+def collect_verify_report() -> VerifyReport:
+    r = VerifyReport()
+    if not CHROMADB_PATH.is_dir():
+        r.chroma_dir_missing = True
+        return r
+
+    if _path_perm_issue(CHROMADB_PATH):
+        r.chroma_perm_issues = 1
+
+    if BM25_DB_PATH.exists() and _path_perm_issue(BM25_DB_PATH):
+        r.bm25_perm_issues = 1
+
+    if SENTINELS_DB_PATH.exists() and _path_perm_issue(SENTINELS_DB_PATH):
+        r.sentinels_perm_issues = 1
+
+    if not SCHEMA_STATE_PATH.is_file():
+        r.schema_missing = True
+    else:
+        try:
+            data = json.loads(SCHEMA_STATE_PATH.read_text(encoding="utf-8"))
+            if int(data.get("version", -1)) != SCHEMA_VERSION:
+                r.schema_version_mismatch = True
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            r.schema_version_mismatch = True
+
+    try:
+        coll = _get_coll(COLLECTION_NAME)
+    except Exception:
+        r.chroma_collection_missing = True
+        return r
+
+    required = {"project", "conversation_id", "depth", "novelty"}
+    chroma_conv_ids: set[str] = set()
+    chroma_rel_paths: set[str] = set()
+
+    for mid, meta, _ in _iter_all_metadatas(coll):
+        r.chroma_chunk_count += 1
+        if not meta:
+            r.meta_missing += 1
+            continue
+        missing = required - set(meta.keys())
+        if missing:
+            r.meta_missing_fields += 1
+        cid = str(meta.get("conversation_id") or "")
+        if cid:
+            chroma_conv_ids.add(cid)
+        rel = meta.get("source_rel_path")
+        if rel:
+            chroma_rel_paths.add(str(rel))
+            p = TRANSCRIPTS_BASE / str(rel)
+            if not p.is_file():
+                r.orphan_chunks += 1
+
+    try:
+        r.bm25_row_count = bm25.count()
+    except Exception:
+        r.bm25_row_count = -1
+
+    if r.bm25_row_count >= 0 and r.chroma_chunk_count != r.bm25_row_count:
+        r.bm25_drift = True
+
+    for cid in sentinels.iter_cached_conversation_ids():
+        if cid not in chroma_conv_ids:
+            r.orphan_conv_cache.append(cid)
+
+    for abs_path in sentinels.iter_sentinel_abs_paths():
+        try:
+            p = Path(abs_path)
+            rel = transcript_relative_path(p)
+        except OSError:
+            continue
+        if os.path.isabs(rel):
+            continue
+        if rel not in chroma_rel_paths:
+            r.orphan_sentinel_paths.append(abs_path)
+
+    return r
+
+
+def print_verify_report(rep: VerifyReport) -> None:
+    print("── verify ──")
+    if rep.chroma_dir_missing:
+        print("  chromadb: directory missing")
+        return
+    if rep.chroma_collection_missing:
+        print("  chromadb: collection missing (run curios index)")
+        return
+
+    if rep.chroma_perm_issues:
+        print("  chromadb: directory permissions not owner-only")
+    if rep.bm25_perm_issues:
+        print("  bm25.db: file permissions not owner-only")
+    if rep.sentinels_perm_issues:
+        print("  sentinels.db: file permissions not owner-only")
+
+    if rep.schema_missing:
+        print("  schema_version.json: missing")
+    elif rep.schema_version_mismatch:
+        print("  schema_version.json: version mismatch (re-index or curios index --rebuild)")
+
+    if rep.bm25_drift:
+        print(
+            f"  bm25 vs chroma: row count drift (chroma={rep.chroma_chunk_count}, bm25={rep.bm25_row_count})"
+        )
+
+    if rep.meta_missing:
+        print(f"  metadata: {rep.meta_missing} chunk(s) with empty metadata")
+    if rep.meta_missing_fields:
+        print(f"  metadata: {rep.meta_missing_fields} chunk(s) missing required fields")
+    if rep.orphan_chunks:
+        print(f"  orphans: {rep.orphan_chunks} chunk(s) point to missing transcript files")
+        print("    → curios prune --stale")
+
+    if rep.orphan_conv_cache:
+        print(f"  recap cache: {len(rep.orphan_conv_cache)} conversation(s) not in Chroma")
+    if rep.orphan_sentinel_paths:
+        print(f"  sentinels: {len(rep.orphan_sentinel_paths)} indexed-file marker(s) with no Chroma chunk")
+
+    total = rep.total_issues()
+    print(f"  total_issues: {total}")
+
+
+def ensure_schema_state_file() -> None:
+    """Write schema_version.json if missing (does not upgrade mismatched versions)."""
+    SCHEMA_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if SCHEMA_STATE_PATH.is_file():
+        return
+    SCHEMA_STATE_PATH.write_text(
+        json.dumps({"version": SCHEMA_VERSION}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
 
 
 def _export_arc_path(conversation_id: str) -> str:
@@ -495,7 +668,7 @@ def cmd_status() -> int:
     try:
         s = _collect_stats()
     except ValueError:
-        print("collection not found — run curios-index first", file=sys.stderr)
+        print("collection not found — run curios index first", file=sys.stderr)
         return 1
     total_convs = len(s.conversations)
     standard_pct = _pct(s.depth.get("standard", 0), s.total_chunks)
@@ -520,14 +693,14 @@ def cmd_status() -> int:
     return 0
 
 
-def cmd_stats() -> int:
+def cmd_report() -> int:
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1
     try:
         s = _collect_stats()
     except ValueError:
-        print("collection not found — run curios-index first", file=sys.stderr)
+        print("collection not found — run curios index first", file=sys.stderr)
         return 1
 
     total_convs = len(s.conversations)
@@ -535,7 +708,7 @@ def cmd_stats() -> int:
 
     # ── header ──────────────────────────────────────────────
     print("═" * _W)
-    title = "CURIOS INDEX STATS"
+    title = "CURIOS INDEX REPORT"
     schema = f"schema v{SCHEMA_VERSION}"
     gap = _W - len(title) - len(schema) - 2
     print(f" {title}{' ' * max(gap, 1)}{schema}")
@@ -618,7 +791,7 @@ def cmd_stats() -> int:
         if len(shallow) > _MAX_LIST:
             print(f"    ... and {len(shallow) - _MAX_LIST} more")
         print()
-        print("    → curios-maintain prune --shallow")
+        print("    → curios prune --shallow")
     print()
 
     # ── fully incremental conversations ──────────────────────
@@ -646,33 +819,70 @@ def cmd_stats() -> int:
 
 
 def cmd_verify() -> int:
-    issues = 0
     if not CHROMADB_PATH.is_dir():
         print("missing chromadb path", file=sys.stderr)
         return 1
-    mode = CHROMADB_PATH.stat().st_mode
-    if mode & 0o077:
-        print("warning: chromadb path not owner-only", oct(mode & 0o777))
-        issues += 1
-    coll = _get_coll(COLLECTION_NAME)
-    required = {"project", "conversation_id", "depth", "novelty"}
-    for mid, meta, _ in _iter_all_metadatas(coll):
-        if not meta:
-            print("missing metadata", mid)
-            issues += 1
-            continue
-        missing = required - set(meta.keys())
-        if missing:
-            print("chunk", mid, "missing fields", missing)
-            issues += 1
-        rel = meta.get("source_rel_path")
-        if rel:
-            p = TRANSCRIPTS_BASE / str(rel)
-            if not p.is_file():
-                print("orphaned chunk (missing source)", mid, rel)
-                issues += 1
-    print("verify_issues", issues)
-    return 0 if issues == 0 else 2
+    rep = collect_verify_report()
+    print_verify_report(rep)
+    return 0 if rep.total_issues() == 0 else 2
+
+
+def cmd_repair(*, dry_run: bool) -> int:
+    rep = collect_verify_report()
+    print_verify_report(rep)
+    if rep.chroma_dir_missing or rep.chroma_collection_missing:
+        print("repair: cannot auto-fix without a ChromaDB collection", file=sys.stderr)
+        return 1 if rep.chroma_dir_missing else 2
+
+    if dry_run:
+        print("── repair (dry-run) ──")
+        if rep.bm25_drift:
+            print("  would: rebuild BM25 from Chroma")
+        if rep.orphan_conv_cache:
+            print(f"  would: remove {len(rep.orphan_conv_cache)} recap cache row(s)")
+        if rep.orphan_sentinel_paths:
+            print(f"  would: remove {len(rep.orphan_sentinel_paths)} orphan sentinel row(s)")
+        if rep.schema_missing:
+            print("  would: write schema_version.json (missing only)")
+        if not (rep.bm25_drift or rep.orphan_conv_cache or rep.orphan_sentinel_paths or rep.schema_missing):
+            print("  (no automatic fixes applicable)")
+        return 0 if rep.total_issues() == 0 else 2
+
+    print("── repair ──")
+    did = False
+    if rep.schema_missing:
+        ensure_schema_state_file()
+        print("  wrote schema_version.json")
+        did = True
+
+    if rep.orphan_conv_cache:
+        sentinels.delete_conversations(rep.orphan_conv_cache)
+        print(f"  removed {len(rep.orphan_conv_cache)} recap cache row(s)")
+        did = True
+
+    for ap in rep.orphan_sentinel_paths:
+        sentinels.delete_sentinel(ap)
+    if rep.orphan_sentinel_paths:
+        print(f"  removed {len(rep.orphan_sentinel_paths)} orphan sentinel row(s)")
+        did = True
+
+    if rep.bm25_drift:
+        rc = cmd_build_bm25()
+        if rc != 0:
+            return rc
+        print("  rebuilt BM25 from Chroma")
+        did = True
+
+    if not did:
+        print("  (nothing to auto-fix)")
+
+    rep2 = collect_verify_report()
+    remaining = rep2.total_issues()
+    if remaining:
+        print(f"  remaining_issues: {remaining} (see curios verify; orphan chunks need curios prune --stale)")
+        return 2
+    print("  all checks passed after repair")
+    return 0
 
 
 def _confirm(msg: str) -> bool:
@@ -697,14 +907,21 @@ def cmd_reindex(project: str | None) -> int:
     except OSError:
         pass
 
-    exe = shutil.which("curios-index")
-    if exe:
-        cmd: list[str] = [exe]
-    else:
-        cmd = [sys.executable or "python3", "-m", "curios.indexer"]
-    if project:
-        cmd += ["--project", project]
-    subprocess.run(cmd, check=True)
+    paths = discover_transcripts(project)
+    if not paths:
+        print("no transcripts found")
+        return 0
+    fd, total = run_index(paths, force=True, dry_run=False)
+    print(f"reindexed {fd} files, {total} chunks")
+    if fd > 0:
+        LAST_INDEXED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_INDEXED_PATH.write_text(
+            json.dumps(
+                {"indexed_at": int(time.time()), "files_done": fd, "chunks_written": total},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     return 0
 
 
@@ -728,7 +945,7 @@ def cmd_prune_shallow() -> int:
             bm25.delete_many(batch)
             coll.delete(ids=batch)
     sentinels.delete_conversations(list(conv_ids))
-    print("done")
+    print("deleted", len(ids))
     return 0
 
 
@@ -793,62 +1010,3 @@ def cmd_prune_stale() -> int:
     return 0
 
 
-def _cli() -> int:
-    ap = argparse.ArgumentParser(description="Curios maintenance CLI")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser("status")
-    sub.add_parser("stats")
-    sub.add_parser("verify")
-
-    sub.add_parser("build-bm25")
-
-    p_re = sub.add_parser("reindex")
-    p_re.add_argument("--project", type=str, default=None)
-
-    p_pr = sub.add_parser("prune")
-    g = p_pr.add_mutually_exclusive_group(required=True)
-    g.add_argument("--shallow", action="store_true")
-    g.add_argument("--stale", action="store_true")
-    p_pr.add_argument("--project", type=str, default=None)
-    p_pr.add_argument("--before", type=str, default=None)
-
-    p_ex = sub.add_parser("export", help="Pack raw .jsonl transcripts into a .tar.gz with manifest.json")
-    p_ex.add_argument("--output", type=Path, required=True, help="Destination path (e.g. curios-export.tar.gz)")
-    p_ex.add_argument("--project", type=str, default=None, help="Only transcripts for this project (name or slug)")
-
-    p_im = sub.add_parser("import", help="Unpack a Curios transcript archive and index into ChromaDB")
-    p_im.add_argument("--input", type=Path, required=True, help="Archive from curios-maintain export")
-    p_im.add_argument("--project", type=str, default=None, help="Put all transcripts under this logical project")
-    p_im.add_argument("--dry-run", action="store_true", help="Validate manifest and print destinations only")
-    p_im.add_argument("--force", action="store_true", help="Ignore sentinels when indexing")
-
-    args = ap.parse_args()
-    if args.cmd == "status":
-        return cmd_status()
-    if args.cmd == "stats":
-        return cmd_stats()
-    if args.cmd == "verify":
-        return cmd_verify()
-    if args.cmd == "build-bm25":
-        return cmd_build_bm25()
-    if args.cmd == "reindex":
-        return cmd_reindex(args.project)
-    if args.cmd == "prune":
-        if args.shallow:
-            return cmd_prune_shallow()
-        if args.stale:
-            return cmd_prune_stale()
-        if args.project and args.before:
-            return cmd_prune_project_before(args.project, args.before)
-        print("prune: use --shallow | --stale | --project X --before YYYY-MM-DD", file=sys.stderr)
-        return 1
-    if args.cmd == "export":
-        return cmd_export_transcripts(args.output, args.project)
-    if args.cmd == "import":
-        return cmd_import_transcripts(args.input, args.project, args.dry_run, args.force)
-    return 1  # argparse required=True makes this unreachable; kept for type safety
-
-
-def main() -> None:
-    raise SystemExit(_cli())

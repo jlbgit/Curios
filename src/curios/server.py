@@ -677,7 +677,7 @@ def main() -> None:
         if stale:
             print(
                 f"[curios] WARNING: deployed Cursor files are stale ({', '.join(stale)}). "
-                "Run 'curios cursor install' to sync.",
+                "Run 'curios install' to sync.",
                 file=sys.stderr,
             )
     except Exception:

@@ -52,6 +52,8 @@ def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr("curios.maintain.CHROMADB_PATH", chroma_path)
     monkeypatch.setattr("curios.maintain.TRANSCRIPTS_BASE", proj_base)
     monkeypatch.setattr("curios.maintain.BM25_DB_PATH", data / "bm25.db")
+    monkeypatch.setattr("curios.maintain.SCHEMA_STATE_PATH", data / "schema_version.json")
+    monkeypatch.setattr("curios.maintain.SENTINELS_DB_PATH", data / "sentinels.db")
 
     monkeypatch.setattr("curios.indexer.CURIOS_DATA", data)
     monkeypatch.setattr("curios.indexer.LOCK_PATH", data / ".index.lock")
@@ -100,3 +102,26 @@ def sample_transcript_path(tmp_path) -> Path:
     ]
     p.write_text("\n".join(lines), encoding="utf-8")
     return p
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    """Do not run live/benchmark tests unless the user passed an explicit ``-m`` expression.
+
+    Live tests open the host's real ChromaDB; ``Collection.count()`` can segfault in
+    Chroma's Rust layer when another process is writing the same DB (e.g. reindex).
+    """
+    try:
+        markexpr = config.getoption("markexpr", default="")
+    except Exception:
+        return
+    if markexpr:
+        return
+    skip = pytest.mark.skip(
+        reason=(
+            "live/benchmark tests opt-in: `uv run pytest -m live` or "
+            "`uv run pytest -m benchmark` (real ChromaDB; avoid while reindexing)"
+        ),
+    )
+    for item in items:
+        if item.get_closest_marker("live") or item.get_closest_marker("benchmark"):
+            item.add_marker(skip)

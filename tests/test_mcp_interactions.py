@@ -36,7 +36,7 @@ def db_populated():
     except Exception:
         count = 0
     if count == 0:
-        pytest.skip("ChromaDB collection is empty — run curios-index first")
+        pytest.skip("ChromaDB collection is empty — run curios index first")
     return count
 
 

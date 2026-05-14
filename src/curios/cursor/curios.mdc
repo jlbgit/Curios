@@ -24,4 +24,4 @@ Search topics: `decisions`, `architecture`, `learnings`, `problems`, `preference
 - Use `curios_recap` (not search) for "where did we leave off" — it returns time-ordered recent conversations.
 - Use `include_shallow=true` only for exhaustive searches. Use `strict=true` for novel content only.
 - When the user continues prior work or assumes shared context, proactively call curios_recap to orient yourself before responding.
-- Manual reindex: `curios-maintain reindex` (normally automatic via sessionEnd hook).
+- Manual full rebuild: `curios index --rebuild` (normally automatic via sessionEnd hook).
