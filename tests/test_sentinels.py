@@ -181,7 +181,7 @@ def test_mark_indexed_updates_file_mtime():
 def test_find_stale_detects_modified_file(tmp_path):
     """File whose current mtime exceeds stored mtime is reported as stale."""
     f = tmp_path / "transcript.jsonl"
-    f.write_text("content")
+    f.write_text("content", encoding="utf-8")
     ap = str(f.resolve())
     stored_mtime = int(f.stat().st_mtime)
 
@@ -197,7 +197,7 @@ def test_find_stale_detects_modified_file(tmp_path):
 def test_find_stale_ignores_unchanged_file(tmp_path):
     """File with unchanged mtime is not reported as stale."""
     f = tmp_path / "unchanged.jsonl"
-    f.write_text("content")
+    f.write_text("content", encoding="utf-8")
     ap = str(f.resolve())
     mtime = int(f.stat().st_mtime)
 
@@ -208,7 +208,7 @@ def test_find_stale_ignores_unchanged_file(tmp_path):
 def test_find_stale_ignores_deleted_file(tmp_path):
     """Deleted files are silently skipped (not reported as stale)."""
     f = tmp_path / "deleted.jsonl"
-    f.write_text("content")
+    f.write_text("content", encoding="utf-8")
     ap = str(f.resolve())
     mtime = int(f.stat().st_mtime)
 
@@ -220,7 +220,7 @@ def test_find_stale_ignores_deleted_file(tmp_path):
 def test_find_stale_respects_max_age(tmp_path):
     """Sentinels older than max_age_s are not checked."""
     f = tmp_path / "old.jsonl"
-    f.write_text("content")
+    f.write_text("content", encoding="utf-8")
     ap = str(f.resolve())
 
     sentinels.mark_indexed(ap, 5, file_mtime=1)
@@ -239,7 +239,7 @@ def test_find_stale_respects_max_age(tmp_path):
 def test_find_stale_legacy_row_uses_indexed_at(tmp_path):
     """Legacy rows without file_mtime fall back to indexed_at comparison."""
     f = tmp_path / "legacy.jsonl"
-    f.write_text("content")
+    f.write_text("content", encoding="utf-8")
     ap = str(f.resolve())
 
     sentinels.mark_indexed(ap, 5)

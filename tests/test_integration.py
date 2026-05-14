@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from pathlib import Path
 
 import pytest
 
+from curios.config import set_owner_only_permissions
 from curios.indexer import run_index
 from curios.server import curios_recap, curios_related, curios_search
 from tests.conftest import patch_curios_roots, reset_server_globals, unwrap_curios_result
@@ -34,7 +34,7 @@ def _write_conv(agent_dir: Path, body_user: str, body_asst: str) -> str:
 def indexed_pair(monkeypatch, tmp_path):
     patch_curios_roots(monkeypatch, tmp_path)
     chroma_path = tmp_path / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
 
     base = tmp_path / "projects"
     a_dir = base / "SynthNorth" / "agent-transcripts"

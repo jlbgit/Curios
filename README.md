@@ -1,6 +1,6 @@
 # Curios
 
-**v0.6.0**
+**v0.6.1**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -21,7 +21,7 @@ Curios passively indexes your agent conversation transcripts into a local semant
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Zero effort**     | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization                                                                                                                                                        |
 | **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
-| **Fully local**     | Single `~/.local/share/curios/` directory — no Docker, no background services, no extra API keys                                                                                                                                                                   |
+| **Fully local**     | Single per-user data directory (see [Data directory](#data-directory)) — no Docker, no background services, no extra API keys                                                                                                                                   |
 | **Lean surface**    | Three read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                       |
 
 
@@ -30,6 +30,8 @@ Curios passively indexes your agent conversation transcripts into a local semant
 **Why not [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and direct inspiration for Curios. For the Cursor use case it has friction: the agent must explicitly call a save tool (most sessions go unrecorded), 29 MCP tools bloat every system prompt, and it targets broad personal KB management rather than making your IDE conversation history passively reusable.
 
 Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes three MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
+
+**Platform testing:** CI and routine use have been on **Linux only** so far. macOS and Windows paths, locking, and installs are supported in code, but they are not exercised the same way in automated tests — please report anything that breaks on those systems.
 
 ## Installation
 
@@ -65,7 +67,7 @@ Only the `curios` entries are touched — other MCP servers, hooks, and rules ar
 
 **Restart Cursor** after running this.
 
-`curios uninstall` removes only Curios wiring inside Cursor (MCP entry, `sessionEnd` hook, `rules/curios.mdc`, and the two packaged skills). It does **not** remove the `uv` tool, binaries, or anything under your data directory (`CURIOS_DATA`, default `~/.local/share/curios/`). For a complete removal, follow [Uninstallation](#uninstallation).
+`curios uninstall` removes only Curios wiring inside Cursor (MCP entry, `sessionEnd` hook, `rules/curios.mdc`, and the two packaged skills). It does **not** remove the `uv` tool, binaries, or anything under your data directory (`CURIOS_DATA`; default depends on OS — see [Data directory](#data-directory)). For a complete removal, follow [Uninstallation](#uninstallation).
 
 After any `uv tool install --reinstall`, re-run `curios install` to keep the deployed rule and skills in sync with the new package. You can check whether they are current at any time:
 
@@ -149,13 +151,22 @@ which curios curios-server
 }
 ```
 
-The hook reads `transcript_path` from Cursor's JSON payload on stdin, queues the transcript for the MCP server's catch-up indexer, and returns immediately — well within the 10-second timeout. The hook process appends its log output to `~/.local/share/curios/index.log`. When at least one file is indexed by a full indexer run, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
+The hook reads `transcript_path` from Cursor's JSON payload on stdin, queues the transcript for the MCP server's catch-up indexer, and returns immediately — well within the 10-second timeout. The hook process appends its log output to `$CURIOS_DATA/index.log` (see [Data directory](#data-directory) for the default `CURIOS_DATA` on your OS). When at least one file is indexed by a full indexer run, a `last_indexed.json` completion record is written. Memory builds up passively as sessions close.
 
 `**~/.cursor/rules/curios.mdc**` — the source lives in `src/curios/cursor/curios.mdc`. Ships with `alwaysApply: true` so the AI proactively searches conversation memory when context would help (e.g. a session starts with a question that requires prior decisions or history). Set to `alwaysApply: false` if you prefer the rule to load only when explicitly referenced — this reduces token overhead in sessions where memory is not needed, but means the agent won't search Curios unless you mention it.
 
 ## Data directory
 
-Runtime data is stored in `~/.local/share/curios/` (created automatically on first index run, mode `700`):
+Runtime data lives under **`CURIOS_DATA`**. If unset, the default is platform-specific (created on first index run; on Unix the directory is created with owner-only permissions):
+
+| OS | Default `CURIOS_DATA` |
+| -- | --------------------- |
+| Linux / other Unix (no `XDG_DATA_HOME`) | `~/.local/share/curios` |
+| Linux / BSD with `XDG_DATA_HOME` | `$XDG_DATA_HOME/curios` |
+| macOS | `~/Library/Application Support/curios` |
+| Windows | `%LOCALAPPDATA%\curios` (or `~\AppData\Local\curios` if `LOCALAPPDATA` is unset) |
+
+Example layout on Linux (paths are the same relative names under `CURIOS_DATA` everywhere):
 
 ```
 ~/.local/share/curios/
@@ -178,7 +189,7 @@ All paths are defined in `src/curios/config.py` with sensible defaults. You can 
 
 | Variable             | Default                  | Purpose                                                                                |
 | -------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
-| `CURIOS_DATA`        | `~/.local/share/curios/` | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
+| `CURIOS_DATA`        | Platform default (see table above) | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
 | `CURIOS_CURSOR_HOME` | `~/.cursor/`             | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
 
 
@@ -272,13 +283,13 @@ Do all of the following, in order:
    uv tool uninstall curios
    ```
 
-3. **Delete the data directory** (ChromaDB, SQLite indexes, logs, `custom_keywords.json`, `project_overrides.json`, etc.). Default path:
+3. **Delete the data directory** (ChromaDB, SQLite indexes, logs, `custom_keywords.json`, `project_overrides.json`, etc.). Remove the directory tree for your effective `CURIOS_DATA` (see [Data directory](#data-directory) for defaults). On Unix:
 
    ```bash
    rm -rf ~/.local/share/curios
    ```
 
-   If you use a custom location, remove that tree instead (`CURIOS_DATA`).
+   On macOS the default is `~/Library/Application Support/curios`; on Windows, remove `%LOCALAPPDATA%\curios` (Explorer or `Remove-Item -Recurse`). If you use a custom location, remove that tree instead.
 
 **Not covered by Curios itself:** environment variables (`CURIOS_*`, etc.) in shell profiles; any rules or skills you copied by hand outside the paths `curios install` manages; Cursor’s own per-project MCP cache under `~/.cursor/projects/` (refreshes over time or after restart).
 

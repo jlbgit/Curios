@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import tarfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from curios import bm25, sentinels
-from curios.config import SCHEMA_VERSION
+from curios.config import SCHEMA_VERSION, set_owner_only_permissions
 from curios.maintain import EXPORT_MANIFEST_VERSION
 from tests.conftest import make_chroma_collection, topic_meta_false
 
@@ -24,7 +23,7 @@ def test_prune_shallow_cleans_bm25_and_sentinels(curios_data_env):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     meta_shallow = {
         "project": "P",
@@ -86,7 +85,7 @@ def test_prune_stale_cleans_sentinel_and_bm25(curios_data_env):
     abs_path = str((proj_base / rel).resolve())
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     meta = {
         "project": "P",
@@ -125,7 +124,7 @@ def test_prune_project_before_cleans_bm25_and_sentinels(curios_data_env):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     meta_old = {
         "project": "Px",
@@ -190,7 +189,7 @@ def test_cmd_build_bm25_wipes_and_refills_under_index_lock(curios_data_env, monk
     from curios import indexer, maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     meta = {
         "project": "Q",
@@ -228,7 +227,7 @@ def test_cmd_status_report_verify_smoke(curios_data_env, capsys):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     rel = "slug/agent-transcripts/x.jsonl"
     meta = {
@@ -270,7 +269,7 @@ def test_cmd_repair_dry_run_when_clean(curios_data_env, capsys):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     rel = "slug/agent-transcripts/x.jsonl"
     meta = {
@@ -306,7 +305,7 @@ def test_cmd_repair_writes_missing_schema_file(curios_data_env, capsys):
     from curios import maintain
 
     chroma_path = curios_data_env / "curios_data" / "chromadb"
-    os.chmod(chroma_path, 0o700)
+    set_owner_only_permissions(chroma_path)
     coll = make_chroma_collection(chroma_path)
     rel = "slug/agent-transcripts/x.jsonl"
     meta = {

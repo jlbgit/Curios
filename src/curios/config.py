@@ -5,9 +5,13 @@ import json
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Windows drive root or POSIX filesystem root as a single path part.
+_DRIVE_OR_ROOT_PART = re.compile(r"^([A-Za-z]:[\\/]*|/)$")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -22,17 +26,51 @@ def _env_float(name: str, default: float) -> float:
 
 # ── Paths & directories ─────────────────────────────────────
 # Override via env: CURIOS_CURSOR_HOME, CURIOS_DATA.
-# Default: ~/.cursor for Cursor IDE home, ~/.local/share/curios for data.
+# Default Cursor home: ~/.cursor on all platforms.
+# Default data: Linux/BSD XDG-style; macOS ~/Library/Application Support/curios;
+# Windows %LOCALAPPDATA%\\curios.
 CURSOR_HOME = Path(os.environ.get("CURIOS_CURSOR_HOME", Path.home() / ".cursor"))
-CURIOS_DATA = Path(os.environ.get("CURIOS_DATA", Path.home() / ".local" / "share" / "curios"))
+
+
+def _default_curios_data_dir() -> Path:
+    """Platform-appropriate default for CURIOS_DATA when env is unset."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "curios"
+        return Path.home() / "AppData" / "Local" / "curios"
+    if sys.platform == "darwin":
+        # macOS kernel is Darwin; this branch is all Apple desktop OS releases.
+        return Path.home() / "Library" / "Application Support" / "curios"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "curios"
+    return Path.home() / ".local" / "share" / "curios"
+
+
+CURIOS_DATA = Path(
+    (os.environ.get("CURIOS_DATA") or "").strip() or _default_curios_data_dir()
+)
 
 CHROMADB_PATH = CURIOS_DATA / "chromadb"          # persistent vector store
+
+
+def set_owner_only_permissions(path: str | Path) -> None:
+    """Owner-only mode on Unix (dirs 0o700, files 0o600); no-op on Windows."""
+    if sys.platform == "win32":
+        return
+    p = Path(path)
+    try:
+        mode = 0o700 if p.is_dir() else 0o600
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 def ensure_data_dir() -> None:
     """Create CURIOS_DATA with restricted permissions (idempotent)."""
     CURIOS_DATA.mkdir(parents=True, exist_ok=True)
-    os.chmod(CURIOS_DATA, 0o700)
+    set_owner_only_permissions(CURIOS_DATA)
 TRANSCRIPTS_BASE = CURSOR_HOME / "projects"       # where Cursor writes agent transcripts
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference notes (future)
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
@@ -877,7 +915,11 @@ def extract_project_name(transcript_path: Path) -> str:
     if not segments:
         return "unknown"
 
-    home_parts = [p.lower() for p in HOME.parts if p != "/"]
+    home_parts = [
+        p.lower()
+        for p in HOME.parts
+        if not _DRIVE_OR_ROOT_PART.match(p)
+    ]
     while segments and home_parts and segments[0].lower() == home_parts[0]:
         segments = segments[1:]
         home_parts = home_parts[1:]

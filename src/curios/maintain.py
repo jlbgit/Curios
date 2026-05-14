@@ -78,6 +78,8 @@ class VerifyReport:
 
 
 def _path_perm_issue(path: Path) -> bool:
+    if sys.platform == "win32":
+        return False
     if not path.exists():
         return False
     mode = path.stat().st_mode
@@ -413,7 +415,7 @@ def _collect_index_health() -> IndexHealth:
     h = IndexHealth()
     if LAST_INDEXED_PATH.is_file():
         try:
-            data = json.loads(LAST_INDEXED_PATH.read_text())
+            data = json.loads(LAST_INDEXED_PATH.read_text(encoding="utf-8"))
             h.last_indexed_at = int(data.get("indexed_at", 0))
             h.last_files_done = int(data.get("files_done", 0))
             h.last_chunks_written = int(data.get("chunks_written", 0))
@@ -429,14 +431,14 @@ def _collect_index_health() -> IndexHealth:
 
     if PENDING_QUEUE_PATH.is_file():
         try:
-            lines = PENDING_QUEUE_PATH.read_text().splitlines()
+            lines = PENDING_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
             h.pending_queue_count = sum(1 for ln in lines if ln.strip())
         except OSError:
             pass
 
     if INDEX_LOG_PATH.is_file():
         try:
-            raw = INDEX_LOG_PATH.read_text()
+            raw = INDEX_LOG_PATH.read_text(encoding="utf-8")
             for line in raw.splitlines()[-30:]:
                 low = line.lower()
                 if "error" in low or "traceback" in low or "warning" in low:

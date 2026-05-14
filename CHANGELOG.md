@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1 — 2026-05-14
+
+### Cross-platform (macOS & Windows)
+- **Default `CURIOS_DATA` when unset:** Linux/BSD use XDG-style `~/.local/share/curios` (or `$XDG_DATA_HOME/curios`); macOS uses `~/Library/Application Support/curios`; Windows uses `%LOCALAPPDATA%\curios` (falls back to `~/AppData/Local/curios` if `LOCALAPPDATA` is missing). Override with `CURIOS_DATA` unchanged.
+- **Indexer lock:** Windows uses `msvcrt.locking` on `.index.lock`; Unix continues to use `fcntl.flock`.
+- **File permissions:** `set_owner_only_permissions()` centralises owner-only `chmod` on directories (`0o700`) and files (`0o600`) on Unix; no-op on Windows (replaces ad hoc `chmod` on Chroma, BM25, and sentinels SQLite paths).
+- **`extract_project_name`:** home-prefix stripping ignores Windows drive roots and POSIX `/` so project slugs match across platforms.
+- **Text I/O:** pending queue, hook `index.log`, `last_indexed.json`, and maintenance readers/writers use explicit UTF-8.
+- **`curios verify`:** Unix permission checks are skipped on Windows.
+- **Packaging:** PyPI trove classifiers list macOS, Windows, Linux, and OS Independent.
+- **`curios-install` skill:** Windows-focused `uv` install (PowerShell), `where` / `Get-Command` checks, profile `.cursor` paths, and a short note on default data directories per OS.
+
 ## 0.6.0 — 2026-05-14
 
 ### Migration

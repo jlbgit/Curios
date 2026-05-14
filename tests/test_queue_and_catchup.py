@@ -35,7 +35,7 @@ def test_queue_for_indexing_creates_file(monkeypatch, tmp_path):
     queue_for_indexing(transcript)
 
     assert queue_path.exists()
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert lines[0] == str(transcript.resolve())
 
@@ -55,7 +55,7 @@ def test_queue_for_indexing_appends_multiple(monkeypatch, tmp_path):
         paths.append(p)
         queue_for_indexing(p)
 
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
     for p, line in zip(paths, lines):
         assert line == str(p.resolve())
@@ -71,7 +71,7 @@ def test_drain_pending_queue_returns_valid_paths(monkeypatch, tmp_path):
     existing.touch()
     gone = tmp_path / "gone.jsonl"
 
-    queue_path.write_text(f"{existing.resolve()}\n{gone.resolve()}\n")
+    queue_path.write_text(f"{existing.resolve()}\n{gone.resolve()}\n", encoding="utf-8")
 
     from curios.indexer import drain_pending_queue
 
@@ -88,7 +88,7 @@ def test_drain_pending_queue_clears_file(monkeypatch, tmp_path):
 
     f = tmp_path / "a.jsonl"
     f.touch()
-    queue_path.write_text(str(f.resolve()) + "\n")
+    queue_path.write_text(str(f.resolve()) + "\n", encoding="utf-8")
 
     from curios.indexer import drain_pending_queue
 
@@ -113,7 +113,7 @@ def test_drain_pending_queue_ignores_blank_lines(monkeypatch, tmp_path):
 
     f = tmp_path / "real.jsonl"
     f.touch()
-    queue_path.write_text(f"\n  \n{f.resolve()}\n\n")
+    queue_path.write_text(f"\n  \n{f.resolve()}\n\n", encoding="utf-8")
 
     from curios.indexer import drain_pending_queue
 
@@ -150,7 +150,7 @@ def test_session_hook_queues_transcript_path(monkeypatch, tmp_path):
     )
 
     assert queue_path.exists()
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert str(transcript.resolve()) in lines
 
 
@@ -162,7 +162,7 @@ def test_session_hook_tries_alternate_keys(monkeypatch, tmp_path):
         queue_path, _ = _run_session_hook(
             monkeypatch, tmp_path, {key: str(transcript)}
         )
-        lines = queue_path.read_text().splitlines()
+        lines = queue_path.read_text(encoding="utf-8").splitlines()
         assert str(transcript.resolve()) in lines
         queue_path.unlink(missing_ok=True)
 
@@ -186,7 +186,7 @@ def test_session_hook_fallback_finds_transcript(monkeypatch, tmp_path):
     )
 
     assert queue_path.exists()
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert str(transcript.resolve()) in lines
 
 
@@ -209,7 +209,7 @@ def test_session_hook_fallback_string_root(monkeypatch, tmp_path):
     )
 
     assert queue_path.exists()
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert str(transcript.resolve()) in lines
 
 
@@ -232,7 +232,7 @@ def test_session_hook_fallback_flat_layout(monkeypatch, tmp_path):
     )
 
     assert queue_path.exists()
-    lines = queue_path.read_text().splitlines()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
     assert str(transcript.resolve()) in lines
 
 
@@ -248,14 +248,14 @@ def test_session_hook_fallback_no_match_logs(monkeypatch, tmp_path):
     )
 
     assert log_path.exists()
-    assert "no usable transcript path" in log_path.read_text()
+    assert "no usable transcript path" in log_path.read_text(encoding="utf-8")
 
 
 def test_session_hook_logs_when_no_path(monkeypatch, tmp_path):
     _, log_path = _run_session_hook(monkeypatch, tmp_path, {"irrelevant": "data"})
 
     assert log_path.exists()
-    log_text = log_path.read_text()
+    log_text = log_path.read_text(encoding="utf-8")
     assert "no usable transcript path" in log_text
 
 
@@ -265,7 +265,7 @@ def test_session_hook_logs_missing_file(monkeypatch, tmp_path):
     )
 
     assert log_path.exists()
-    assert "missing file" in log_path.read_text()
+    assert "missing file" in log_path.read_text(encoding="utf-8")
 
 
 def test_session_hook_handles_empty_stdin(monkeypatch, tmp_path):
@@ -273,7 +273,7 @@ def test_session_hook_handles_empty_stdin(monkeypatch, tmp_path):
 
     assert not queue_path.exists()
     assert log_path.exists()
-    assert "no usable transcript path" in log_path.read_text()
+    assert "no usable transcript path" in log_path.read_text(encoding="utf-8")
 
 
 def test_session_hook_handles_invalid_json(monkeypatch, tmp_path):
@@ -281,7 +281,7 @@ def test_session_hook_handles_invalid_json(monkeypatch, tmp_path):
 
     assert not queue_path.exists()
     assert log_path.exists()
-    assert "no usable transcript path" in log_path.read_text()
+    assert "no usable transcript path" in log_path.read_text(encoding="utf-8")
 
 
 # ── _catch_up_index ──────────────────────────────────────────
@@ -299,7 +299,7 @@ def test_catch_up_drains_queue_and_indexes(monkeypatch, tmp_path):
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(str(transcript.resolve()) + "\n")
+    queue_path.write_text(str(transcript.resolve()) + "\n", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
 
     run_index_calls = []
@@ -359,7 +359,7 @@ def test_catch_up_skips_already_indexed(monkeypatch, tmp_path):
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
     t1 = proj / "already.jsonl"
-    t1.write_text('{"role":"user","message":{"content":"x"}}\n')
+    t1.write_text('{"role":"user","message":{"content":"x"}}\n', encoding="utf-8")
     sentinels.mark_indexed(str(t1.resolve()), SCHEMA_VERSION)
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
@@ -391,7 +391,7 @@ def test_catch_up_resets_client_after_indexing(monkeypatch, tmp_path):
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(str(transcript.resolve()) + "\n")
+    queue_path.write_text(str(transcript.resolve()) + "\n", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
     monkeypatch.setattr(
         "curios.indexer.run_index", lambda *a, **kw: (1, 3)
@@ -417,7 +417,7 @@ def test_catch_up_no_crash_on_exception(monkeypatch, tmp_path, caplog):
 
     transcript = tmp_path / "boom.jsonl"
     transcript.touch()
-    queue_path.write_text(str(transcript.resolve()) + "\n")
+    queue_path.write_text(str(transcript.resolve()) + "\n", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
 
     def exploding_run_index(*a, **kw):
@@ -441,11 +441,11 @@ def test_catch_up_deduplicates_discovery_and_queue(monkeypatch, tmp_path):
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
     t1 = proj / "same.jsonl"
-    t1.write_text('{"role":"user","message":{"content":"hi"}}\n')
+    t1.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(str(t1.resolve()) + "\n")
+    queue_path.write_text(str(t1.resolve()) + "\n", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
 
     run_index_calls = []
@@ -538,7 +538,7 @@ def test_catch_up_detects_stale_and_force_reindexes(monkeypatch, tmp_path):
     proj = tmp_path / "projects" / "slug" / "agent-transcripts"
     proj.mkdir(parents=True)
     t1 = proj / "stale.jsonl"
-    t1.write_text('{"role":"user","message":{"content":"old"}}\n')
+    t1.write_text('{"role":"user","message":{"content":"old"}}\n', encoding="utf-8")
     ap = str(t1.resolve())
     stored_mtime = 1000
     sentinels.mark_indexed(ap, SCHEMA_VERSION, file_mtime=stored_mtime)
@@ -578,7 +578,7 @@ def test_catch_up_skips_deleted_transcript_gracefully(monkeypatch, tmp_path):
 
     queue_path = tmp_path / "curios_data" / "pending_index.txt"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(str(transcript.resolve()) + "\n")
+    queue_path.write_text(str(transcript.resolve()) + "\n", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
 
     transcript.unlink()
