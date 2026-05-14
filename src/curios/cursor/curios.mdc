@@ -24,4 +24,5 @@ Search topics: `decisions`, `architecture`, `learnings`, `problems`, `preference
 - Use `curios_recap` (not search) for "where did we leave off" — it returns time-ordered recent conversations.
 - Use `include_shallow=true` only for exhaustive searches. Use `strict=true` for novel content only.
 - When the user continues prior work or assumes shared context, proactively call curios_recap to orient yourself before responding.
+- When the user starts implementing a feature/integration (database, auth, visualization, API, deployment, …) or working on a domain topic (proposal, project description, research area, …), proactively run `curios_search` to find related prior work across projects. Use results to reuse proven patterns, flag pitfalls, and decide whether to replicate or improve upon past approaches (as newer libraries or better patterns may have emerged in the meantime).
 - Manual full rebuild: `curios index --rebuild` (normally automatic via sessionEnd hook).
