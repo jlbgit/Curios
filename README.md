@@ -1,6 +1,6 @@
 # Curios
 
-**v0.6.1**
+**v0.6.2**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -22,14 +22,14 @@ Curios passively indexes your agent conversation transcripts into a local semant
 | **Zero effort**     | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization                                                                                                                                                        |
 | **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
 | **Fully local**     | Single per-user data directory (see [Data directory](#data-directory)) — no Docker, no background services, no extra API keys                                                                                                                                      |
-| **Lean surface**    | Three read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                     |
+| **Lean surface**    | Four read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                     |
 
 
 > *Store everything raw, make it findable, cost nothing extra, require zero user effort.*
 
 **Why not [MemPalace](https://github.com/MemPalace/mempalace)?** MemPalace is a capable general-purpose knowledge base and direct inspiration for Curios. For the Cursor use case it has friction: the agent must explicitly call a save tool (most sessions go unrecorded), 29 MCP tools bloat every system prompt, and it targets broad personal KB management rather than making your IDE conversation history passively reusable.
 
-Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes three MCP tools for semantic search, and ingests automatically on `sessionEnd` via a Cursor hook.
+Technically Curios indexes `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` into a local ChromaDB, exposes four MCP tools for semantic search and index inventory, and ingests automatically on `sessionEnd` via a Cursor hook.
 
 **Platform testing:** CI and routine use have been on **Linux only** so far. macOS and Windows paths, locking, and installs are supported in code, but they are not exercised the same way in automated tests — please report anything that breaks on those systems.
 
@@ -306,7 +306,7 @@ Do all of the following, in order:
 
 ## MCP Tools
 
-Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios status` and edit `preferences.md` directly instead.
+Curios exposes four MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios status` and edit `preferences.md` directly instead.
 
 
 | Tool             | Purpose                                                                                                        | When to use                                                            |
@@ -314,6 +314,7 @@ Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_s
 | `curios_recap`   | Most recent conversations for a project, time-ordered. Optional `since_hours` window. Session-start briefing. | "Where did we leave off", session start, "what's new since yesterday". |
 | `curios_search`  | Semantic search across indexed transcripts (cross-project).                                                    | User asks about prior decisions, patterns, preferences, or history.    |
 | `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
+| `curios_stats`   | Cheap index inventory: project list, conversation counts (including shallow; same SQLite recap cache as `curios report`), `last_active`, top topics; plus total Chroma chunk count. | Orient before search, or answer "what does Curios have indexed?". |
 
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.

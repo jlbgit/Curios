@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2 — 2026-05-15
+
+### MCP
+- **`curios_stats` tool:** index inventory (per-project conversation counts including shallow, `last_active`, top topics) plus `total_chunks` from Chroma — conversation totals match `curios report` (default `curios_search` / `curios_recap` still exclude shallow unless opted in).
+- **`curios install` validation:** warns when deployed `curios-server` version predates `curios_stats` (stale `uv tool install`); run `uv tool install --reinstall …` and restart the IDE so MCP picks up four tools.
+- **`curios install` binary resolution:** store the `which`-visible path instead of following symlinks, avoiding confusion when pyenv shims shadow `uv tool` binaries.
+
 ## 0.6.1 — 2026-05-14
 
 ### Cross-platform (macOS & Windows)

@@ -253,6 +253,104 @@ def test_mark_indexed_updates_file_mtime():
     assert sentinels.is_indexed(ap, 5, file_mtime=200)
 
 
+def test_get_index_stats_empty():
+    assert sentinels.get_index_stats(None) == {"total_conversations": 0, "projects": []}
+
+
+def test_get_index_stats_project_filter():
+    sentinels.upsert_conversation(
+        conversation_id="a1",
+        project="AlphaProj",
+        mtime=100,
+        exchange_count=2,
+        depth="standard",
+        topics="decisions",
+        preview="x",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="b1",
+        project="BetaProj",
+        mtime=200,
+        exchange_count=2,
+        depth="standard",
+        topics="ideas",
+        preview="y",
+    )
+    only_alpha = sentinels.get_index_stats(["AlphaProj"])
+    assert only_alpha["total_conversations"] == 1
+    assert len(only_alpha["projects"]) == 1
+    assert only_alpha["projects"][0]["project"] == "AlphaProj"
+
+    both = sentinels.get_index_stats(["AlphaProj", "BetaProj"])
+    assert both["total_conversations"] == 2
+    assert {p["project"] for p in both["projects"]} == {"AlphaProj", "BetaProj"}
+
+
+def test_get_index_stats_includes_shallow():
+    sentinels.upsert_conversation(
+        conversation_id="sh",
+        project="X",
+        mtime=500,
+        exchange_count=1,
+        depth="shallow",
+        topics="general",
+        preview="hi",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="st",
+        project="X",
+        mtime=400,
+        exchange_count=2,
+        depth="standard",
+        topics="learnings",
+        preview="body",
+    )
+    out = sentinels.get_index_stats(None)
+    assert out["total_conversations"] == 2
+    assert out["projects"][0]["conversations"] == 2
+    assert out["projects"][0]["project"] == "X"
+
+
+def test_get_index_stats_top_topics():
+    for i, topics in enumerate(["z", "z", "z", "y", "x"]):
+        sentinels.upsert_conversation(
+            conversation_id=f"tid{i}",
+            project="TopicProj",
+            mtime=100 + i,
+            exchange_count=2,
+            depth="standard",
+            topics=topics,
+            preview="p",
+        )
+    out = sentinels.get_index_stats(["TopicProj"])
+    tops = out["projects"][0]["top_topics"]
+    assert tops[0] == "z"
+    assert set(tops[1:]) == {"x", "y"}
+
+
+def test_get_index_stats_sorts_by_last_active():
+    sentinels.upsert_conversation(
+        conversation_id="oldp",
+        project="Old",
+        mtime=10,
+        exchange_count=2,
+        depth="standard",
+        topics="a",
+        preview="o",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="newp",
+        project="New",
+        mtime=999,
+        exchange_count=2,
+        depth="standard",
+        topics="b",
+        preview="n",
+    )
+    out = sentinels.get_index_stats(None)
+    assert [p["project"] for p in out["projects"]] == ["New", "Old"]
+
+
 # ── find_stale ──────────────────────────────────────────────
 
 

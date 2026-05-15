@@ -682,6 +682,37 @@ def curios_related(
     return _wrap(body)
 
 
+@mcp.tool()
+@_with_client_recovery
+def curios_stats(
+    project: Annotated[
+        str | None,
+        Field(description="Limit to a project name (e.g. 'Curios'). Omit for all projects."),
+    ] = None,
+) -> str:
+    """Index inventory: conversation counts, total chunks, and top topics per project. When project is given, total_chunks reflects only that project's chunks."""
+    _catch_up_index()
+    resolved = _resolve_project(project)
+    stats = sentinels.get_index_stats(resolved)
+    coll = _collection()
+    if resolved:
+        where = _chroma_project_condition(resolved)
+        total_chunks = _retry_chroma(
+            lambda w=where: len(coll.get(where=w, include=[])["ids"])
+        )
+    else:
+        total_chunks = _retry_chroma(coll.count)
+    body = json.dumps(
+        {
+            "total_conversations": stats["total_conversations"],
+            "total_chunks": total_chunks,
+            "projects": stats["projects"],
+        },
+        indent=2,
+    )
+    return _wrap(body)
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
         from curios import __version__

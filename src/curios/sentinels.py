@@ -321,3 +321,59 @@ def get_recent_conversations(
             }
         )
     return out
+
+
+def get_index_stats(projects: list[str] | None = None) -> dict[str, Any]:
+    """Aggregate conversation counts and topic hints per project (all conversations).
+
+    ``projects`` should be pre-resolved via ``resolve_project()`` or ``None`` for all.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if projects:
+        if len(projects) == 1:
+            clauses.append("project = ?")
+            params.append(projects[0])
+        else:
+            placeholders = ", ".join("?" for _ in projects)
+            clauses.append(f"project IN ({placeholders})")
+            params.extend(projects)
+    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            f"""
+            SELECT project,
+                   COUNT(*) AS conversations,
+                   MAX(mtime) AS last_active,
+                   GROUP_CONCAT(topics, '|') AS all_topics
+            FROM conversations
+            {where_sql}
+            GROUP BY project
+            ORDER BY last_active DESC
+            """,
+            params,
+        ).fetchall()
+
+    out = []
+    total = 0
+    for project, conversations, last_active, all_topics_concat in rows:
+        total += conversations
+        topic_counts: dict[str, int] = {}
+        for segment in (all_topics_concat or "").split("|"):
+            for t in segment.split(","):
+                t = t.strip()
+                if t:
+                    topic_counts[t] = topic_counts.get(t, 0) + 1
+        top = sorted(topic_counts, key=lambda t: -topic_counts[t])[:3]
+        out.append(
+            {
+                "project": project,
+                "conversations": conversations,
+                "last_active": last_active,
+                "top_topics": top,
+            }
+        )
+
+    return {"total_conversations": total, "projects": out}

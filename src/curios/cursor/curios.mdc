@@ -14,6 +14,7 @@ Cross-project transcript memory via MCP. Call tools with `server: "user-curios"`
 | `curios_recap` | `{project?, n_results?, since_hours?}` | Session start, "where did we leave off", recent context; use `since_hours` (e.g. 24) for "what's new since yesterday" |
 | `curios_search` | `{query, project?, topic?, strict?, include_shallow?, n_results?}` | User asks about prior decisions, patterns, history |
 | `curios_related` | `{conversation_id, n_results?}` | A search result looks relevant and you want cross-project connections |
+| `curios_stats` | `{project?}` | Index inventory: projects, conversation counts (includes shallow; aligns with `curios report`), top topics |
 
 Search topics: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues`.
 
@@ -25,5 +26,6 @@ Search topics: `decisions`, `architecture`, `learnings`, `problems`, `preference
 - For "what happened since yesterday" or "what's new in the last N hours", use `curios_recap` with `since_hours` (e.g. 24). Omit `since_hours` for all-time top-N recap. Terminal: `curios recent --hours 24`.
 - Use `include_shallow=true` only for exhaustive searches. Use `strict=true` for novel content only.
 - When the user continues prior work or assumes shared context, proactively call curios_recap to orient yourself before responding.
+- Optionally call `curios_stats` before broad cross-project search to see which projects and rough chunk volume are in the index.
 - When the user starts implementing a feature/integration (database, auth, visualization, API, deployment, …) or working on a domain topic (proposal, project description, research area, …), proactively run `curios_search` to find related prior work across projects. Use results to reuse proven patterns, flag pitfalls, and decide whether to replicate or improve upon past approaches (as newer libraries or better patterns may have emerged in the meantime).
 - Manual full rebuild: `curios index --rebuild` (normally automatic via sessionEnd hook).

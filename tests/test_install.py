@@ -100,6 +100,7 @@ def test_cmd_cursor_install_writes_mcp_hooks_rules_skills(
     assert "/fake/bin/curios index --session-hook" in session_end[0]["command"]
 
     assert (cursor_home / "rules" / "curios.mdc").is_file()
+    assert "curios_stats" in (cursor_home / "rules" / "curios.mdc").read_text(encoding="utf-8")
     assert (cursor_home / "skills" / "curios-install" / "SKILL.md").is_file()
     assert (cursor_home / "skills" / "curios-keyword-discovery" / "SKILL.md").is_file()
 
@@ -230,6 +231,7 @@ def test_cmd_claude_install_merges_claude_md(
     assert "Keep this." in md
     assert "<!-- BEGIN CURIOS -->" in md
     assert "curios_recap" in md
+    assert "curios_stats" in md
 
     settings = json.loads((ch / "settings.json").read_text(encoding="utf-8"))
     hook_groups = settings["hooks"]["SessionEnd"]
@@ -594,7 +596,7 @@ def test_validate_install_cursor_ok(
     monkeypatch.setattr(
         install.subprocess,
         "run",
-        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "0.6.1\n", "stderr": ""})(),
+        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "0.6.2\n", "stderr": ""})(),
     )
 
     assert install._validate_install("cursor") == 0

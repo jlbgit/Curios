@@ -30,6 +30,8 @@ _FREE_WARN_MB = 250
 
 _BINARY_HINT = "Run 'uv tool install git+https://github.com/jlbgit/Curios' first."
 
+_STATS_TOOL_MIN_VERSION = (0, 6, 2)
+
 
 class CuriosInstallError(RuntimeError):
     """Raised when IDE bootstrap cannot complete (missing binaries, etc.)."""
@@ -238,22 +240,12 @@ def _save_json(path: Path, data: dict) -> None:
 
 
 def _same_binary(a: str, b: str) -> bool:
-    """Return True if two paths run the same binary (handles pyenv shims, symlinks)."""
+    """Return True if two paths refer to the same binary (follows symlinks)."""
     if a == b:
         return True
     try:
-        if Path(a).resolve() == Path(b).resolve():
-            return True
+        return Path(a).resolve() == Path(b).resolve()
     except OSError:
-        pass
-    # Pyenv shims are bash scripts (not symlinks), so resolve their identity via --version output.
-    try:
-        va = subprocess.run([a, "--version"], capture_output=True, text=True, timeout=5)
-        vb = subprocess.run([b, "--version"], capture_output=True, text=True, timeout=5)
-        out_a = (va.stdout or va.stderr).strip()
-        out_b = (vb.stdout or vb.stderr).strip()
-        return bool(va.returncode == 0 and vb.returncode == 0 and out_a and out_a == out_b)
-    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -261,7 +253,7 @@ def _resolve_binary(name: str) -> str:
     found = shutil.which(name)
     if not found:
         raise CuriosInstallError(f"'{name}' not found on PATH. {_BINARY_HINT}")
-    return str(Path(found).resolve())
+    return str(Path(found).absolute())
 
 
 def _package_text(name: str) -> str:
@@ -474,6 +466,17 @@ def _validate_install(ide: str | None = None) -> int:
             if proc.returncode == 0:
                 ver = (proc.stdout or proc.stderr).strip() or "ok"
                 checks.append(("Server responds", True, ver, True))
+                try:
+                    installed = tuple(int(x) for x in ver.split(".")[:3])
+                    stats_ok = installed >= _STATS_TOOL_MIN_VERSION
+                    stats_detail = f"v{ver}" if stats_ok else (
+                        f"v{ver} < v{'.'.join(map(str, _STATS_TOOL_MIN_VERSION))}. "
+                        "Run `uv tool install --reinstall git+https://github.com/jlbgit/Curios` "
+                        "then restart Cursor/Claude."
+                    )
+                    checks.append(("MCP tool surface (curios_stats)", stats_ok, stats_detail, True))
+                except (ValueError, TypeError):
+                    checks.append(("MCP tool surface (curios_stats)", False, f"could not parse version {ver!r}", True))
             else:
                 checks.append(("Server responds", False, f"exit {proc.returncode}", True))
         except (OSError, subprocess.TimeoutExpired) as e:
