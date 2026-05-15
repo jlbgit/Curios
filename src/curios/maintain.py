@@ -485,7 +485,7 @@ def cmd_build_bm25() -> int:
         if not meta:
             continue
         proj = str(meta.get("project") or "unknown")
-        rows.append((str(mid), doc or "", proj))
+        rows.append((str(mid), doc or "", proj, int(meta.get("source_mtime") or 0)))
     if not rows:
         print("no chunks in ChromaDB", file=sys.stderr)
         return 1
@@ -681,10 +681,12 @@ def cmd_search(
     project: str | None,
     n_results: int,
     snippet_chars: int = _SEARCH_SNIPPET_DEFAULT,
+    since_hours: int | None = None,
 ) -> int:
     snip = max(_SEARCH_SNIPPET_MIN, min(int(snippet_chars), _SEARCH_SNIPPET_MAX))
     resolved = sentinels.resolve_project(project) if project else None
-    hits = bm25.search_with_text(query, resolved, n_results * 3)
+    since_ts = int(time.time()) - since_hours * 3600 if since_hours is not None else None
+    hits = bm25.search_with_text(query, resolved, n_results * 3, since_ts=since_ts)
     if not hits:
         print(f'no results for "{query}"')
         return 0

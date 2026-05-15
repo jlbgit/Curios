@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3 — 2026-05-16
+
+### MCP
+- **`curios_search` — `since_hours` parameter:** restricts semantic search to chunks from conversations active within the last N hours (e.g. `since_hours=720` for last 30 days). Applied as a native pre-filter in ChromaDB (`source_mtime >= now - N*3600`) and as a SQL WHERE clause in the BM25/FTS5 index.
+
+### BM25
+- **Schema version 2:** `source_mtime` column added to the FTS5 virtual table. Existing BM25 databases are wiped and rebuilt automatically on first run (server bootstrap via `_ensure_bm25`, or manually via `curios repair`). All insert paths (`indexer`, `maintain`, server bootstrap) now store `source_mtime`.
+
+### CLI
+- **`curios search --since HOURS`:** time-window filter for the terminal keyword search command.
+
 ## 0.6.2 — 2026-05-15
 
 ### MCP

@@ -198,7 +198,6 @@ def test_claude_staleness_report_ok_after_claude_install(
     monkeypatch.setattr(install, "CLAUDE_JSON_PATH", cj)
     monkeypatch.setattr(install, "CLAUDE_SETTINGS_PATH", ch / "settings.json")
     monkeypatch.setattr(install, "_resolve_binary", lambda name: str(fake_bin / name))
-    monkeypatch.setattr(install, "_try_which", lambda name: str(fake_bin / name))
 
     assert install.cmd_claude_install(claude_home=ch, claude_json=cj) == 0
     report = install.claude_staleness_report(claude_home=ch, claude_json=cj, claude_settings=ch / "settings.json")

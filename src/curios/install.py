@@ -21,7 +21,6 @@ from curios.config import (
     CURSOR_HOME,
     CURIOS_DATA,
     LAST_INDEXED_PATH,
-    LOCK_PATH,
     SESSION_HOOK_TIMEOUT,
     set_owner_only_permissions,
 )
@@ -132,10 +131,6 @@ def _strip_claude_md_section(text: str) -> str:
     _, _, post = rest.partition(_CURIOS_CLAUDE_BLOCK_END)
     merged = (pre.rstrip("\n") + "\n" + post.lstrip("\n")).strip("\n")
     return merged + ("\n" if merged else "")
-
-
-def _try_which(name: str) -> str | None:
-    return shutil.which(name)
 
 
 def _is_curios_session_hook(command: str) -> bool:
@@ -348,15 +343,23 @@ def claude_staleness_report(
     return results
 
 
+def _disk_usage_path() -> Path:
+    """Nearest existing ancestor of CURIOS_DATA (for shutil.disk_usage before data dir exists)."""
+    p = CURIOS_DATA
+    while not p.exists():
+        p = p.parent
+    return p
+
+
 def _warn_low_disk_space() -> None:
-    stat = shutil.disk_usage(CURIOS_DATA)
+    stat = shutil.disk_usage(_disk_usage_path())
     free_mb = stat.free // (1024**2)
     if free_mb < _FREE_WARN_MB:
         print(f"WARNING: only {free_mb} MB free on {CURIOS_DATA}; indexing may fail.")
 
 
 def _disk_free_status() -> tuple[bool, str]:
-    stat = shutil.disk_usage(CURIOS_DATA)
+    stat = shutil.disk_usage(_disk_usage_path())
     free_mb = stat.free // (1024**2)
     detail = f"{free_mb} MB on {CURIOS_DATA}"
     if free_mb < _FREE_WARN_MB:
@@ -668,7 +671,6 @@ def cmd_install(ide: str | None, dry_run: bool = False, validate_only: bool = Fa
         print("ERROR: No supported IDE directories found; nothing installed.", file=sys.stderr)
         return 1
     if not dry_run:
-        LOCK_PATH.unlink(missing_ok=True)
         return _validate_install(ide)
     return 0
 
@@ -979,6 +981,14 @@ def _cli() -> int:
         dest="snippet_chars",
         help="Max characters shown per hit (default 320; cap 12000)",
     )
+    src_p.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        metavar="HOURS",
+        dest="since_hours",
+        help="Limit to conversations active in the last N hours",
+    )
 
     sub.add_parser(
         "verify",
@@ -1102,6 +1112,7 @@ def _cli() -> int:
             args.project,
             args.n_results,
             args.snippet_chars,
+            args.since_hours,
         )
 
     if args.cmd == "status":

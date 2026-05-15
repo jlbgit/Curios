@@ -312,7 +312,7 @@ Curios exposes four MCP tools. Earlier pre-release versions had five (`curios_se
 | Tool             | Purpose                                                                                                        | When to use                                                            |
 | ---------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `curios_recap`   | Most recent conversations for a project, time-ordered. Optional `since_hours` window. Session-start briefing. | "Where did we leave off", session start, "what's new since yesterday". |
-| `curios_search`  | Semantic search across indexed transcripts (cross-project).                                                    | User asks about prior decisions, patterns, preferences, or history.    |
+| `curios_search`  | Semantic search across indexed transcripts (cross-project). Optional `since_hours` time window.                | User asks about prior decisions, patterns, preferences, or history.    |
 | `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
 | `curios_stats`   | Cheap index inventory: project list, conversation counts (including shallow; same SQLite recap cache as `curios report`), `last_active`, top topics; plus total Chroma chunk count. | Orient before search, or answer "what does Curios have indexed?". |
 
@@ -346,6 +346,7 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 | `strict`          | `false`      | If true, hard-exclude `incremental` chunks (only truly novel content)                               |
 | `include_shallow` | `false`      | If true, include conversations with < 2 user messages                                               |
 | `n_results`       | `5`          | Max results returned                                                                                |
+| `since_hours`     | `null`       | Only return chunks from conversations active in the last N hours (e.g. `720` for last 30 days). Applied to both dense and BM25 retrieval. |
 
 
 **Default behavior** (`strict=false`, `include_shallow=false`):
@@ -361,6 +362,12 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 **Topic-filtered search** (`topic=...`): topic tags are stored as boolean metadata fields per chunk; ChromaDB applies the filter as a native pre-filter before ANN search. BM25 also widens its candidate pool (`BM25_FILTER_OVERFETCH_FACTOR=4`) when a topic or strict filter is active.
 
 **Strict mode** (`strict=true`): same as default, plus hard-excludes incremental chunks entirely.
+
+**Time-windowed search** (`since_hours=N`): restricts both ChromaDB ANN and BM25 FTS to chunks whose source file was last modified within the window. Applied as a native pre-filter in ChromaDB (`source_mtime >= now - N*3600`) and as a SQL WHERE clause in BM25.
+
+**Examples:** `curios_search(query="NEOTEC budget", since_hours=720)` — last 30 days; `curios_search(query="auth decisions", project="MyApp", since_hours=168)` — last week in one project.
+
+**CLI equivalent:** `curios search <terms> --since 720 --project NEOTEC`.
 
 **Full search** (`include_shallow=true`): includes everything.
 

@@ -170,7 +170,7 @@ def test_cli_verify_runs(curios_data_env, monkeypatch: pytest.MonkeyPatch) -> No
     coll.upsert(ids=["id1"], documents=["hello"], metadatas=[meta])
     schema_path = curios_data_env / "curios_data" / "schema_version.json"
     schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
-    bm25.insert_many([("id1", "hello", "S")])
+    bm25.insert_many([("id1", "hello", "S", None)])
 
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
@@ -182,24 +182,24 @@ def test_cli_verify_runs(curios_data_env, monkeypatch: pytest.MonkeyPatch) -> No
 def test_cli_search_routes_to_cmd_search(monkeypatch: pytest.MonkeyPatch) -> None:
     from curios import maintain
 
-    calls: list[tuple[str, str | None, int, int]] = []
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
 
-    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
-        calls.append((q, p, n, snippet_chars))
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
         return 0
 
     monkeypatch.setattr(maintain, "cmd_search", fake)
     assert _run_main(monkeypatch, ["curios", "search", "foo", "bar"]) == 0
-    assert calls == [("foo bar", None, 5, 320)]
+    assert calls == [("foo bar", None, 5, 320, None)]
 
 
 def test_cli_search_project_and_n_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     from curios import maintain
 
-    calls: list[tuple[str, str | None, int, int]] = []
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
 
-    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
-        calls.append((q, p, n, snippet_chars))
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
         return 0
 
     monkeypatch.setattr(maintain, "cmd_search", fake)
@@ -210,18 +210,18 @@ def test_cli_search_project_and_n_flags(monkeypatch: pytest.MonkeyPatch) -> None
         )
         == 0
     )
-    assert calls == [("foo", "X", 3, 320)]
+    assert calls == [("foo", "X", 3, 320, None)]
 
 
 def test_cli_search_chars_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     from curios import maintain
 
-    calls: list[tuple[str, str | None, int, int]] = []
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
 
-    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
-        calls.append((q, p, n, snippet_chars))
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
         return 0
 
     monkeypatch.setattr(maintain, "cmd_search", fake)
     assert _run_main(monkeypatch, ["curios", "search", "q", "--chars", "900"]) == 0
-    assert calls == [("q", None, 5, 900)]
+    assert calls == [("q", None, 5, 900, None)]

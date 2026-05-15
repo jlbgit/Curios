@@ -15,6 +15,8 @@ _lock = threading.Lock()
 
 _FTS_SPECIAL_RE = re.compile(r'["*+\-():^]')
 
+_BM25_SCHEMA_VERSION = 2
+
 _STOPWORDS: frozenset[str] = frozenset(
     "a an the is are was were be been being have has had do does did "
     "will would shall should may might can could of in on at to for "
@@ -36,8 +38,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
 USING fts5(
   chunk_id UNINDEXED,
   text,
-  project UNINDEXED
+  project UNINDEXED,
+  source_mtime UNINDEXED
 )
+"""
+
+_SCHEMA_META_SQL = """
+CREATE TABLE IF NOT EXISTS _schema_meta (key TEXT PRIMARY KEY, value TEXT)
 """
 
 
@@ -47,7 +54,26 @@ def _get_conn() -> sqlite3.Connection:
         ensure_data_dir()
         path = str(BM25_DB_PATH)
         _conn = sqlite3.connect(path, check_same_thread=False)
-        _conn.execute(_TABLE_SQL)
+        _conn.execute(_SCHEMA_META_SQL)
+        row = _conn.execute(
+            "SELECT value FROM _schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        stored_version = int(row[0]) if row else 0
+        if stored_version != _BM25_SCHEMA_VERSION:
+            _conn.execute("DROP TABLE IF EXISTS chunks_fts")
+            _conn.execute(_TABLE_SQL)
+            _conn.execute(
+                "INSERT OR REPLACE INTO _schema_meta(key, value) VALUES ('schema_version', ?)",
+                (str(_BM25_SCHEMA_VERSION),),
+            )
+            _conn.commit()
+            log.info(
+                "BM25 schema migrated %d → %d; index will be rebuilt on next search",
+                stored_version,
+                _BM25_SCHEMA_VERSION,
+            )
+        else:
+            _conn.execute(_TABLE_SQL)
         _conn.execute("PRAGMA journal_mode=WAL")
         set_owner_only_permissions(path)
     return _conn
@@ -91,18 +117,18 @@ def _fts_match_expression(query: str) -> str:
     return " OR ".join(tokens)
 
 
-def insert(chunk_id: str, text: str, project: str) -> None:
+def insert(chunk_id: str, text: str, project: str, source_mtime: int | None = None) -> None:
     with _lock:
         conn = _get_conn()
         conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk_id,))
         conn.execute(
-            "INSERT INTO chunks_fts(chunk_id, text, project) VALUES (?, ?, ?)",
-            (chunk_id, text, project),
+            "INSERT INTO chunks_fts(chunk_id, text, project, source_mtime) VALUES (?, ?, ?, ?)",
+            (chunk_id, text, project, source_mtime or 0),
         )
         conn.commit()
 
 
-def insert_many(rows: list[tuple[str, str, str]]) -> None:
+def insert_many(rows: list[tuple[str, str, str, int | None]]) -> None:
     """Append rows (replace same chunk_id). Does NOT truncate the FTS table."""
     if not rows:
         return
@@ -110,8 +136,8 @@ def insert_many(rows: list[tuple[str, str, str]]) -> None:
         conn = _get_conn()
         conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(r[0],) for r in rows])
         conn.executemany(
-            "INSERT INTO chunks_fts(chunk_id, text, project) VALUES (?, ?, ?)",
-            rows,
+            "INSERT INTO chunks_fts(chunk_id, text, project, source_mtime) VALUES (?, ?, ?, ?)",
+            [(r[0], r[1], r[2], r[3] or 0) for r in rows],
         )
         conn.commit()
 
@@ -141,10 +167,31 @@ def count() -> int:
         return int(row[0]) if row else 0
 
 
-def search(query: str, projects: list[str] | None, n: int) -> list[str]:
+def _time_clauses(since_ts: int | None, until_ts: int | None) -> tuple[str, list[int]]:
+    """Return extra SQL WHERE fragments and params for time bounds."""
+    clauses: list[str] = []
+    params: list[int] = []
+    if since_ts is not None:
+        clauses.append("source_mtime >= ?")
+        params.append(since_ts)
+    if until_ts is not None:
+        clauses.append("source_mtime <= ?")
+        params.append(until_ts)
+    sql = (" AND " + " AND ".join(clauses)) if clauses else ""
+    return sql, params
+
+
+def search(
+    query: str,
+    projects: list[str] | None,
+    n: int,
+    since_ts: int | None = None,
+    until_ts: int | None = None,
+) -> list[str]:
     match_expr = _fts_match_expression(query)
     if not match_expr:
         return []
+    time_sql, time_params = _time_clauses(since_ts, until_ts)
     with _lock:
         conn = _get_conn()
         try:
@@ -152,15 +199,15 @@ def search(query: str, projects: list[str] | None, n: int) -> list[str]:
                 placeholders = ", ".join("?" for _ in projects)
                 sql = (
                     "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "
-                    f"AND project IN ({placeholders}) ORDER BY bm25(chunks_fts) LIMIT ?"
+                    f"AND project IN ({placeholders}){time_sql} ORDER BY bm25(chunks_fts) LIMIT ?"
                 )
-                rows = conn.execute(sql, (match_expr, *projects, n)).fetchall()
+                rows = conn.execute(sql, (match_expr, *projects, *time_params, n)).fetchall()
             else:
                 sql = (
-                    "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "
-                    "ORDER BY bm25(chunks_fts) LIMIT ?"
+                    "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ?"
+                    f"{time_sql} ORDER BY bm25(chunks_fts) LIMIT ?"
                 )
-                rows = conn.execute(sql, (match_expr, n)).fetchall()
+                rows = conn.execute(sql, (match_expr, *time_params, n)).fetchall()
         except sqlite3.OperationalError as e:
             log.warning("FTS5 search failed (query=%r): %s", query[:80], e)
             return []
@@ -168,12 +215,17 @@ def search(query: str, projects: list[str] | None, n: int) -> list[str]:
 
 
 def search_with_text(
-    query: str, projects: list[str] | None, n: int
+    query: str,
+    projects: list[str] | None,
+    n: int,
+    since_ts: int | None = None,
+    until_ts: int | None = None,
 ) -> list[tuple[str, str, str]]:
     """Like search() but returns (chunk_id, text, project) tuples."""
     match_expr = _fts_match_expression(query)
     if not match_expr:
         return []
+    time_sql, time_params = _time_clauses(since_ts, until_ts)
     with _lock:
         conn = _get_conn()
         try:
@@ -181,16 +233,16 @@ def search_with_text(
                 placeholders = ", ".join("?" for _ in projects)
                 sql = (
                     "SELECT chunk_id, text, project FROM chunks_fts "
-                    f"WHERE chunks_fts MATCH ? AND project IN ({placeholders}) "
+                    f"WHERE chunks_fts MATCH ? AND project IN ({placeholders}){time_sql} "
                     "ORDER BY bm25(chunks_fts) LIMIT ?"
                 )
-                rows = conn.execute(sql, (match_expr, *projects, n)).fetchall()
+                rows = conn.execute(sql, (match_expr, *projects, *time_params, n)).fetchall()
             else:
                 sql = (
                     "SELECT chunk_id, text, project FROM chunks_fts "
-                    "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?"
+                    f"WHERE chunks_fts MATCH ?{time_sql} ORDER BY bm25(chunks_fts) LIMIT ?"
                 )
-                rows = conn.execute(sql, (match_expr, n)).fetchall()
+                rows = conn.execute(sql, (match_expr, *time_params, n)).fetchall()
         except sqlite3.OperationalError as e:
             log.warning("FTS5 search_with_text failed (query=%r): %s", query[:80], e)
             return []

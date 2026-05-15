@@ -86,7 +86,22 @@ def index_lock() -> Iterator[None]:
         fp.flush()
         fp.seek(0)
         try:
-            msvcrt.locking(fp.fileno(), msvcrt.LK_LOCK, 1)
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            delay = 0.05
+            while True:
+                try:
+                    msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as e:
+                    if e.errno != errno.EACCES:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"curios index lock held for >{LOCK_TIMEOUT_S}s"
+                        ) from e
+                    time.sleep(min(delay, remaining))
+                    delay = min(delay * 2, 1.0)
             _lock_local.depth = 1
             yield
         finally:
@@ -498,13 +513,13 @@ def _index_file(
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict[str, Any]] = []
-    bm25_rows: list[tuple[str, str, str]] = []
+    bm25_rows: list[tuple[str, str, str, int | None]] = []
     for (cid, text, partial), nov in zip(pending, novelties):
         meta = {**partial, "novelty": nov}
         ids.append(cid)
         docs.append(text)
         metas.append(meta)
-        bm25_rows.append((cid, text, project))
+        bm25_rows.append((cid, text, project, int(partial.get("source_mtime") or 0)))
 
     coll.upsert(ids=ids, documents=docs, metadatas=metas)
     bm25.insert_many(bm25_rows)

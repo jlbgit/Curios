@@ -52,7 +52,7 @@ def test_prune_shallow_cleans_bm25_and_sentinels(curios_data_env):
         documents=["shallow chunk", "deep chunk"],
         metadatas=[meta_shallow, meta_deep],
     )
-    bm25.insert_many([("s1", "shallow chunk", "P"), ("d1", "deep chunk", "P")])
+    bm25.insert_many([("s1", "shallow chunk", "P", None), ("d1", "deep chunk", "P", None)])
     sentinels.upsert_conversation(
         conversation_id="conv-s",
         project="P",
@@ -99,7 +99,7 @@ def test_prune_stale_cleans_sentinel_and_bm25(curios_data_env):
         **topic_meta_false(),
     }
     coll.upsert(ids=["x1"], documents=["orphan chunk"], metadatas=[meta])
-    bm25.insert_many([("x1", "orphan chunk", "P")])
+    bm25.insert_many([("x1", "orphan chunk", "P", None)])
     sentinels.mark_indexed(abs_path, SCHEMA_VERSION)
     sentinels.upsert_conversation(
         conversation_id="conv-miss",
@@ -153,7 +153,7 @@ def test_prune_project_before_cleans_bm25_and_sentinels(curios_data_env):
         documents=["old text", "new text"],
         metadatas=[meta_old, meta_new],
     )
-    bm25.insert_many([("o1", "old text", "Px"), ("n1", "new text", "Px")])
+    bm25.insert_many([("o1", "old text", "Px", None), ("n1", "new text", "Px", None)])
     sentinels.upsert_conversation(
         conversation_id="c-old",
         project="Px",
@@ -203,7 +203,7 @@ def test_cmd_build_bm25_wipes_and_refills_under_index_lock(curios_data_env, monk
         **topic_meta_false(),
     }
     coll.upsert(ids=["q1", "q2"], documents=["alpha", "beta"], metadatas=[meta, meta])
-    bm25.insert_many([("stale", "ghost", "Q")])
+    bm25.insert_many([("stale", "ghost", "Q", None)])
 
     entered: list[int] = []
     orig = indexer.index_lock
@@ -246,7 +246,7 @@ def test_cmd_status_report_verify_smoke(curios_data_env, capsys):
     schema_path = curios_data_env / "curios_data" / "schema_version.json"
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
-    bm25.insert_many([("id1", "hello world", "S")])
+    bm25.insert_many([("id1", "hello world", "S", None)])
 
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
@@ -288,7 +288,7 @@ def test_cmd_repair_dry_run_when_clean(curios_data_env, capsys):
     schema_path = curios_data_env / "curios_data" / "schema_version.json"
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
-    bm25.insert_many([("id1", "hello world", "S")])
+    bm25.insert_many([("id1", "hello world", "S", None)])
 
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
@@ -324,7 +324,7 @@ def test_cmd_repair_writes_missing_schema_file(curios_data_env, capsys):
     schema_path = curios_data_env / "curios_data" / "schema_version.json"
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
-    bm25.insert_many([("id1", "hello world", "S")])
+    bm25.insert_many([("id1", "hello world", "S", None)])
 
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
@@ -499,8 +499,8 @@ def test_cmd_search_project_filter(curios_data_env, capsys):
     cid_b = "22222222-2222-4222-8222-222222222222"
     bm25.insert_many(
         [
-            (f"curios_OnlyA_{cid_a}_0", "sharedfiltertoken alpha", "OnlyA"),
-            (f"curios_OnlyB_{cid_b}_0", "sharedfiltertoken beta", "OnlyB"),
+            (f"curios_OnlyA_{cid_a}_0", "sharedfiltertoken alpha", "OnlyA", None),
+            (f"curios_OnlyB_{cid_b}_0", "sharedfiltertoken beta", "OnlyB", None),
         ]
     )
     sentinels.upsert_conversation(
@@ -533,8 +533,8 @@ def test_cmd_search_deduplicates_by_conversation(curios_data_env, capsys):
     cid = "33333333-3333-4333-8333-333333333333"
     bm25.insert_many(
         [
-            (f"curios_P_{cid}_0", "deduptoken first hit", "P"),
-            (f"curios_P_{cid}_1", "deduptoken second hit", "P"),
+            (f"curios_P_{cid}_0", "deduptoken first hit", "P", None),
+            (f"curios_P_{cid}_1", "deduptoken second hit", "P", None),
         ]
     )
     sentinels.upsert_conversation(
