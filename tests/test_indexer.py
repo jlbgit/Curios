@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import uuid
@@ -53,9 +54,12 @@ def test_discover_transcripts_warns_on_empty_glob(caplog, tmp_path, monkeypatch)
     mock_base = tmp_path / "cursor_projects"
     mock_base.mkdir()
     (mock_base / "some-slug").mkdir()
+    no_claude = tmp_path / "no_claude_projects"
     caplog.set_level(logging.WARNING)
     monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", mock_base, raising=False)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", no_claude, raising=False)
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", mock_base)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     out = discover_transcripts()
     assert out == []
     assert "no transcripts matched" in caplog.text
@@ -63,12 +67,15 @@ def test_discover_transcripts_warns_on_empty_glob(caplog, tmp_path, monkeypatch)
 
 def test_discover_transcripts_finds_jsonl(tmp_path, monkeypatch):
     base = tmp_path / "projects"
+    no_claude = tmp_path / "no_claude"
     agent = base / "my-app-slug" / "agent-transcripts"
     agent.mkdir(parents=True)
     f = agent / "a.jsonl"
     f.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", base)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", base)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     paths = discover_transcripts("my-app")
     assert len(paths) == 1
     assert paths[0] == f
@@ -96,6 +103,50 @@ def test_line_text_unexpected_type_logs(caplog):
     rec = {"message": {"content": 12345}}
     assert _line_text(rec) == ""
     assert "unexpected content type" in caplog.text
+
+
+def test_parse_transcript_claude_top_level_type(tmp_path):
+    p = tmp_path / "claude.jsonl"
+    p.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]},
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    exchanges, user_count = _parse_transcript(p)
+    assert user_count == 1
+    assert len(exchanges) == 1
+    assert exchanges[0]["user"] == "Hi"
+    assert exchanges[0]["assistant"] == "Hello"
+
+
+def test_discover_transcripts_finds_claude_jsonl(tmp_path, monkeypatch):
+    cb = tmp_path / "claude_projects"
+    slug = cb / "my-app-slug"
+    f = slug / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("{}", encoding="utf-8")
+    cursor_b = tmp_path / "cursor_projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", cursor_b)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", cb)
+    monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", cursor_b)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", cb)
+    paths = discover_transcripts("my-app")
+    assert len(paths) == 1
+    assert paths[0] == f
 
 
 def test_parse_transcript_multi_exchange(tmp_path):
@@ -263,3 +314,26 @@ def test_index_file_skips_when_sentinel_matches(monkeypatch, tmp_path):
     coll = _get_collections(client)
     n = _index_file(tr, coll, force=False, dry_run=False, project_override=None)
     assert n == 0
+
+
+def test_session_hook_logs_when_queue_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import curios.indexer as idx
+
+    t = tmp_path / "conv.jsonl"
+    t.write_text("{}\n", encoding="utf-8")
+    lines: list[str] = []
+
+    def capture(msg: str) -> None:
+        lines.append(msg)
+
+    def boom(_path: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(idx, "_log_to_index_file", capture)
+    monkeypatch.setattr(idx, "queue_for_indexing", boom)
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"transcript_path": str(t)})),
+    )
+    idx._session_hook()
+    assert any("FAILED to queue" in x for x in lines)

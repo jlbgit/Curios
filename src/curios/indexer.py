@@ -35,6 +35,7 @@ from curios.config import (
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
     TOPIC_ROLE_WEIGHTS,
+    CLAUDE_TRANSCRIPTS_BASE,
     TRANSCRIPTS_BASE,
     _DEFAULT_ROLE_WEIGHTS,
     ensure_data_dir,
@@ -146,7 +147,7 @@ def _line_text(record: dict[str, Any]) -> str:
                     parts.append(t)
         return "\n".join(parts).strip()
     if content is not None:
-        log.warning("unexpected content type %s — Cursor format may have changed", type(content).__name__)
+        log.warning("unexpected content type %s — transcript format may have changed", type(content).__name__)
     return ""
 
 
@@ -176,7 +177,7 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
             except json.JSONDecodeError:
                 log.debug("invalid JSON at %s line %d, skipping", path.name, lineno)
                 continue
-            role = obj.get("role")
+            role = obj.get("role") or obj.get("type")
             text = _line_text(obj)
             if not text:
                 if role in ("user", "assistant"):
@@ -191,7 +192,7 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
     flush()
 
     if line_count > 0 and not exchanges:
-        log.warning("no exchanges parsed from %s (%d lines) — Cursor format may have changed", path.name, line_count)
+        log.warning("no exchanges parsed from %s (%d lines) — transcript format may have changed", path.name, line_count)
 
     return exchanges, user_messages
 
@@ -479,28 +480,44 @@ def _index_file(
 
 
 def discover_transcripts(project_filter: str | None = None) -> list[Path]:
-    base = TRANSCRIPTS_BASE
-    if not base.is_dir():
-        return []
+    sources: tuple[tuple[Path, tuple[str, ...]], ...] = (
+        (TRANSCRIPTS_BASE, ("*/agent-transcripts/*/*.jsonl", "*/agent-transcripts/*.jsonl")),
+        (CLAUDE_TRANSCRIPTS_BASE, ("*/*.jsonl", "*/*/subagents/*.jsonl")),
+    )
     by_key: dict[str, Path] = {}
-    for pattern in ("*/agent-transcripts/*/*.jsonl", "*/agent-transcripts/*.jsonl"):
-        for p in base.glob(pattern):
-            by_key[str(p.resolve())] = p
-    if not by_key:
-        try:
-            if any(base.iterdir()):
-                log.warning(
-                    "TRANSCRIPTS_BASE (%s) is non-empty but no transcripts matched known glob patterns. "
-                    "Cursor may have changed its transcript layout.",
-                    base,
-                )
-        except OSError:
-            pass
+    for base, patterns in sources:
+        if not base.is_dir():
+            continue
+        matched = False
+        for pattern in patterns:
+            for p in base.glob(pattern):
+                matched = True
+                by_key[str(p.resolve())] = p
+        if not matched:
+            try:
+                if any(base.iterdir()):
+                    log.warning(
+                        "%s is non-empty but no transcripts matched known glob patterns "
+                        "for this source (the IDE may have changed its transcript layout).",
+                        base,
+                    )
+            except OSError:
+                pass
     out: list[Path] = []
     for p in sorted(by_key.values(), key=lambda x: str(x)):
         if project_filter:
             proj = extract_project_name(p)
-            slug = p.relative_to(base).parts[0]
+            base_for_file: Path | None = None
+            for b, _ in sources:
+                try:
+                    p.relative_to(b)
+                    base_for_file = b
+                    break
+                except ValueError:
+                    continue
+            if base_for_file is None:
+                continue
+            slug = p.relative_to(base_for_file).parts[0]
             needle = project_filter.lower()
             if needle not in proj.lower() and needle not in slug.lower():
                 continue
@@ -616,7 +633,7 @@ def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:
 
 
 def _session_hook() -> None:
-    """Called by Cursor's sessionEnd hook.
+    """Called by Cursor's sessionEnd hook or Claude Code's SessionEnd hook.
 
     Reads JSON from stdin and queues the transcript path for the MCP
     server's catch-up indexer. Does NOT access ChromaDB directly —
@@ -644,5 +661,9 @@ def _session_hook() -> None:
         _log_to_index_file(f"missing file {path}")
         return
 
-    queue_for_indexing(path)
+    try:
+        queue_for_indexing(path)
+    except OSError as e:
+        _log_to_index_file(f"FAILED to queue {path}: {e}")
+        return
     _log_to_index_file(f"queued {path}")

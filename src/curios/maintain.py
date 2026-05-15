@@ -21,6 +21,7 @@ from curios.config import (
     CHROMA_DELETE_BATCH,
     CHROMA_ITER_BATCH,
     CHROMADB_PATH,
+    CLAUDE_TRANSCRIPTS_BASE,
     CLI_MAX_LIST_ITEMS,
     CLI_RULER_WIDTH,
     COLLECTION_NAME,
@@ -86,6 +87,11 @@ def _path_perm_issue(path: Path) -> bool:
     return bool(mode & 0o077)
 
 
+def _transcript_exists(rel_path: str) -> bool:
+    """Return True if rel_path resolves to an actual file under any known transcript base."""
+    return (TRANSCRIPTS_BASE / rel_path).is_file() or (CLAUDE_TRANSCRIPTS_BASE / rel_path).is_file()
+
+
 def collect_verify_report() -> VerifyReport:
     r = VerifyReport()
     if not CHROMADB_PATH.is_dir():
@@ -135,8 +141,7 @@ def collect_verify_report() -> VerifyReport:
         rel = meta.get("source_rel_path")
         if rel:
             chroma_rel_paths.add(str(rel))
-            p = TRANSCRIPTS_BASE / str(rel)
-            if not p.is_file():
+            if not _transcript_exists(str(rel)):
                 r.orphan_chunks += 1
 
     try:
@@ -994,7 +999,7 @@ def cmd_prune_stale() -> int:
         if not rel:
             continue
         p = TRANSCRIPTS_BASE / str(rel)
-        if not p.is_file():
+        if not _transcript_exists(str(rel)):
             to_delete.append(mid)
             abs_paths.add(str(p.resolve()))
             cid = str((meta or {}).get("conversation_id") or "")

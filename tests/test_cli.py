@@ -45,6 +45,35 @@ def test_cli_help_exits_zero(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Cap
     assert "COMMAND" in out or "index" in out
 
 
+def test_cli_install_dry_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from curios import install
+
+    ch = tmp_path / ".cursor"
+    ch.mkdir()
+    monkeypatch.setattr(install, "CURSOR_HOME", ch)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr(install, "_resolve_binary", lambda name: f"/fake/bin/{name}")
+    assert _run_main(monkeypatch, ["curios", "install", "cursor", "--dry-run"]) == 0
+    assert "DRY-RUN" in capsys.readouterr().out
+    assert not (ch / "mcp.json").exists()
+
+
+def test_cli_install_missing_binary_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from curios import install
+
+    ch = tmp_path / ".cursor"
+    ch.mkdir()
+    monkeypatch.setattr(install, "CURSOR_HOME", ch)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    assert _run_main(monkeypatch, ["curios", "install", "cursor"]) == 1
+    assert "not found on PATH" in capsys.readouterr().err
+
+
 def test_cli_index_rebuild_rejects_project(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     assert (
         _run_main(monkeypatch, ["curios", "index", "--rebuild", "--project", "X"])

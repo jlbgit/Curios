@@ -1,11 +1,11 @@
 ---
 name: curios-install
-description: Install and configure Curios (cross-project memory for Cursor IDE). Use when the user wants to install Curios, set up Curios memory, configure the curios MCP server, or is setting up Cursor on a new machine.
+description: Install and configure Curios (cross-project memory for Cursor and Claude Code). Use when the user wants to install Curios, set up Curios memory, configure the curios MCP server, or is setting up a new machine.
 ---
 
 # Curios Install
 
-Installs Curios end-to-end: Python package, Cursor config (MCP server + session hook + AI rule), and initial transcript index.
+Installs Curios end-to-end: Python package, IDE config (MCP server + session hook + AI rule/CLAUDE.md for Cursor and/or Claude Code), and initial transcript index.
 
 ## Step 0 — Check prerequisites
 
@@ -48,15 +48,19 @@ uv tool install git+https://github.com/jlbgit/Curios
 
 Verify (Linux/macOS: `which curios curios-server`; Windows: `where curios` and `where curios-server`).
 
-## Step 2 — Configure Cursor
+## Step 2 — Configure IDEs
 
 ```bash
 curios install
 ```
 
-Merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json` (on Windows: under your user profile, typically `%USERPROFILE%\.cursor\`), copies the AI rule to `~/.cursor/rules/`, and installs this skill to `~/.cursor/skills/`. Safe to re-run.
+Auto-detects installed IDEs and configures each one found:
+- **Cursor**: merges into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs skills to `~/.cursor/skills/`.
+- **Claude Code**: merges into `~/.claude.json` and `~/.claude/settings.json`, adds a Curios section to `~/.claude/CLAUDE.md`, and installs skills to `~/.claude/skills/`.
 
-**Tell the user to restart Cursor** before proceeding.
+Use `curios install cursor` or `curios install claude` to target one IDE only. Safe to re-run.
+
+**Tell the user to restart their IDE** before proceeding.
 
 ## Step 3 — Initial index
 
