@@ -535,3 +535,130 @@ def test_cmd_uninstall_skips_missing_cursor_home(
     assert install.cmd_uninstall(None) == 0
     out = capsys.readouterr().out
     assert "skipping" in out
+
+
+def test_cmd_cursor_install_warns_on_mcp_binary_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from curios import install
+
+    cursor_home = tmp_path / ".cursor"
+    cursor_home.mkdir()
+    (cursor_home / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"curios": {"command": "/old/curios-server"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install, "CURSOR_HOME", cursor_home)
+    monkeypatch.setattr(install, "_resolve_binary", lambda name: f"/new/bin/{name}")
+
+    assert install.cmd_cursor_install() == 0
+    out = capsys.readouterr().out
+    assert "WARNING: replacing existing curios MCP entry" in out
+    assert "/old/curios-server" in out
+    assert "/new/bin/curios-server" in out
+
+
+def test_validate_install_cursor_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from curios import install
+
+    cursor_home = tmp_path / ".cursor"
+    cursor_home.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("curios-server", "curios"):
+        f = fake_bin / name
+        f.write_text("#!/bin/sh\necho 0.6.1\n")
+        f.chmod(0o755)
+
+    server = str(fake_bin / "curios-server")
+    curios = str(fake_bin / "curios")
+    (cursor_home / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"curios": {"command": server}}}),
+        encoding="utf-8",
+    )
+    (cursor_home / "hooks.json").write_text(
+        json.dumps({
+            "version": 1,
+            "hooks": {"sessionEnd": [{"command": f"{curios} index --session-hook", "timeout": 10}]},
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(install, "CURSOR_HOME", cursor_home)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr(install, "CURIOS_DATA", tmp_path / "curios_data")
+    install.CURIOS_DATA.mkdir()
+    monkeypatch.setattr(install.shutil, "which", lambda name: str(fake_bin / name))
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "0.6.1\n", "stderr": ""})(),
+    )
+
+    assert install._validate_install("cursor") == 0
+    out = capsys.readouterr().out
+    assert "Validating install" in out
+    assert "OK   MCP entry matches binary (Cursor)" in out
+    assert "Install validated successfully" in out
+
+
+def test_validate_install_fails_when_mcp_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from curios import install
+
+    cursor_home = tmp_path / ".cursor"
+    cursor_home.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("curios-server", "curios"):
+        f = fake_bin / name
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+
+    (cursor_home / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"curios": {"command": "/wrong/curios-server"}}}),
+        encoding="utf-8",
+    )
+    (cursor_home / "hooks.json").write_text(
+        json.dumps({"version": 1, "hooks": {"sessionEnd": []}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(install, "CURSOR_HOME", cursor_home)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr(install, "CURIOS_DATA", tmp_path / "curios_data")
+    install.CURIOS_DATA.mkdir()
+    monkeypatch.setattr(install.shutil, "which", lambda name: str(fake_bin / name))
+
+    assert install._validate_install("cursor") == 1
+    out = capsys.readouterr().out
+    assert "FAIL MCP entry matches binary (Cursor)" in out
+
+
+def test_cmd_install_validate_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from curios import install
+
+    monkeypatch.setattr(install, "_validate_install", lambda ide: 0)
+    assert install.cmd_install(None, validate_only=True) == 0
+    assert install.cmd_install("cursor", dry_run=True, validate_only=True) == 0
+
+
+def test_warn_low_disk_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from curios import install
+
+    monkeypatch.setattr(install, "CURIOS_DATA", tmp_path / "data")
+    install.CURIOS_DATA.mkdir()
+
+    class Stat:
+        free = 100 * 1024 * 1024
+
+    monkeypatch.setattr(install.shutil, "disk_usage", lambda _p: Stat())
+    install._warn_low_disk_space()
+    assert "WARNING: only 100 MB free" in capsys.readouterr().out

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -16,11 +17,14 @@ from curios.config import (
     CLAUDE_JSON_PATH,
     CLAUDE_SETTINGS_PATH,
     CURSOR_HOME,
+    CURIOS_DATA,
     LAST_INDEXED_PATH,
     LOCK_PATH,
     SESSION_HOOK_TIMEOUT,
     set_owner_only_permissions,
 )
+
+_FREE_WARN_MB = 250
 
 _BINARY_HINT = "Run 'uv tool install git+https://github.com/jlbgit/Curios' first."
 
@@ -324,6 +328,139 @@ def claude_staleness_report(
     return results
 
 
+def _warn_low_disk_space() -> None:
+    stat = shutil.disk_usage(CURIOS_DATA)
+    free_mb = stat.free // (1024**2)
+    if free_mb < _FREE_WARN_MB:
+        print(f"WARNING: only {free_mb} MB free on {CURIOS_DATA}; indexing may fail.")
+
+
+def _disk_free_status() -> tuple[bool, str]:
+    stat = shutil.disk_usage(CURIOS_DATA)
+    free_mb = stat.free // (1024**2)
+    detail = f"{free_mb} MB on {CURIOS_DATA}"
+    if free_mb < _FREE_WARN_MB:
+        return False, f"{detail} (< {_FREE_WARN_MB} MB threshold)"
+    return True, detail
+
+
+def _cursor_session_hook_status() -> tuple[bool, str]:
+    hooks_cfg = _load_json(CURSOR_HOME / "hooks.json")
+    for h in hooks_cfg.get("hooks", {}).get("sessionEnd", []):
+        cmd = h.get("command", "")
+        if not _is_curios_session_hook(cmd):
+            continue
+        stored_bin = cmd.split()[0] if cmd else ""
+        if stored_bin and Path(stored_bin).is_file() and os.access(stored_bin, os.X_OK):
+            return True, stored_bin
+        return False, f"hook command not executable: {cmd!r}"
+    return False, "no Curios sessionEnd hook"
+
+
+def _print_validation_results(checks: list[tuple[str, bool, str, bool]]) -> int:
+    print("Validating install...")
+    fatal_failed = False
+    warn_count = 0
+    for label, ok, detail, warn_only in checks:
+        if ok:
+            print(f"  OK   {label}: {detail}")
+        elif warn_only:
+            print(f"  WARN {label}: {detail}")
+            warn_count += 1
+        else:
+            print(f"  FAIL {label}: {detail}")
+            fatal_failed = True
+    if fatal_failed:
+        print("\nInstall validation failed.")
+        return 1
+    if warn_count:
+        print(f"\nInstall validated with {warn_count} warning{'s' if warn_count != 1 else ''}.")
+    else:
+        print("\nInstall validated successfully.")
+    return 0
+
+
+def _validate_install(ide: str | None = None) -> int:
+    checks: list[tuple[str, bool, str, bool]] = []
+    server_bin = shutil.which("curios-server")
+    curios_bin = shutil.which("curios")
+    checks.append(("curios-server binary", bool(server_bin), server_bin or "not on PATH", False))
+    checks.append(("curios binary", bool(curios_bin), curios_bin or "not on PATH", False))
+
+    want_cursor = ide in (None, "cursor")
+    want_claude = ide in (None, "claude")
+
+    if want_cursor and CURSOR_HOME.is_dir():
+        mcp_cfg = _load_json(CURSOR_HOME / "mcp.json")
+        stored_mcp = (mcp_cfg.get("mcpServers") or {}).get("curios", {})
+        stored_cmd = stored_mcp.get("command") if isinstance(stored_mcp, dict) else None
+        mcp_ok = bool(stored_cmd and server_bin and stored_cmd == server_bin)
+        checks.append((
+            "MCP entry matches binary (Cursor)",
+            mcp_ok,
+            stored_cmd or "missing curios entry",
+            False,
+        ))
+        hook_ok, hook_detail = _cursor_session_hook_status()
+        checks.append((
+            "SessionEnd hook present + binary resolves (Cursor)",
+            hook_ok,
+            hook_detail,
+            False,
+        ))
+
+    if want_claude and CLAUDE_HOME.is_dir():
+        claude_cfg = _load_json(CLAUDE_JSON_PATH)
+        stored_mcp = (claude_cfg.get("mcpServers") or {}).get("curios", {})
+        stored_cmd = stored_mcp.get("command") if isinstance(stored_mcp, dict) else None
+        mcp_ok = bool(stored_cmd and server_bin and stored_cmd == server_bin)
+        checks.append((
+            "MCP entry matches binary (Claude)",
+            mcp_ok,
+            stored_cmd or "missing curios entry",
+            False,
+        ))
+        settings_cfg = _load_json(CLAUDE_SETTINGS_PATH)
+        hook_ok = _has_curios_claude_session_hook(settings_cfg)
+        checks.append((
+            "SessionEnd hook present + binary resolves (Claude)",
+            hook_ok,
+            "present" if hook_ok else "missing or non-executable",
+            False,
+        ))
+        md_path = CLAUDE_HOME / "CLAUDE.md"
+        md_text = md_path.read_text(encoding="utf-8") if md_path.is_file() else ""
+        md_ok = _CURIOS_CLAUDE_BLOCK_BEGIN in md_text and _CURIOS_CLAUDE_BLOCK_END in md_text
+        checks.append((
+            "CLAUDE.md Curios section present",
+            md_ok,
+            str(md_path) if md_ok else "markers missing",
+            False,
+        ))
+
+    if server_bin:
+        try:
+            proc = subprocess.run(
+                [server_bin, "--version"],
+                timeout=5,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                ver = (proc.stdout or proc.stderr).strip() or "ok"
+                checks.append(("Server responds", True, ver, True))
+            else:
+                checks.append(("Server responds", False, f"exit {proc.returncode}", True))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            checks.append(("Server responds", False, str(e), True))
+    else:
+        checks.append(("Server responds", False, "curios-server not on PATH", True))
+
+    disk_ok, disk_detail = _disk_free_status()
+    checks.append(("disk free", disk_ok, disk_detail, True))
+    return _print_validation_results(checks)
+
+
 def cmd_check() -> int:
     report = staleness_report()
     any_stale = any(stale for _, _, stale in report)
@@ -351,6 +488,9 @@ def cmd_cursor_install(cursor_home: Path | None = None, dry_run: bool = False) -
 
     mcp_path = cursor_home / "mcp.json"
     cfg = _load_json(mcp_path)
+    existing_cmd = cfg.get("mcpServers", {}).get("curios", {}).get("command")
+    if existing_cmd and existing_cmd != server_bin:
+        print(f"WARNING: replacing existing curios MCP entry ({existing_cmd} → {server_bin})")
     cfg.setdefault("mcpServers", {})["curios"] = {"command": server_bin}
     if dry_run:
         print(f"DRY-RUN: would merge curios into {mcp_path} -> curios: {server_bin}")
@@ -418,6 +558,9 @@ def cmd_claude_install(
     server_bin = _resolve_binary("curios-server")
     curios_bin = _resolve_binary("curios")
     cfg = _load_json(json_path)
+    existing_cmd = cfg.get("mcpServers", {}).get("curios", {}).get("command")
+    if existing_cmd and existing_cmd != server_bin:
+        print(f"WARNING: replacing existing curios MCP entry ({existing_cmd} → {server_bin})")
     cfg.setdefault("mcpServers", {})["curios"] = {"command": server_bin}
     if dry_run:
         print(f"DRY-RUN: would merge curios into {json_path} -> curios: {server_bin}")
@@ -458,10 +601,14 @@ def cmd_claude_install(
     return 0
 
 
-def cmd_install(ide: str | None, dry_run: bool = False) -> int:
+def cmd_install(ide: str | None, dry_run: bool = False, validate_only: bool = False) -> int:
     if ide is not None and ide not in ("cursor", "claude"):
         print("install: IDE must be 'cursor', 'claude', or omitted for auto-detect.", file=sys.stderr)
         return 1
+    if validate_only:
+        return _validate_install(ide)
+    if not dry_run:
+        _warn_low_disk_space()
     want_cursor = ide in (None, "cursor")
     want_claude = ide in (None, "claude")
     did_any = False
@@ -491,6 +638,7 @@ def cmd_install(ide: str | None, dry_run: bool = False) -> int:
         return 1
     if not dry_run:
         LOCK_PATH.unlink(missing_ok=True)
+        return _validate_install(ide)
     return 0
 
 
@@ -690,6 +838,11 @@ def _cli() -> int:
         action="store_true",
         help="Print what would be written without modifying files",
     )
+    inst.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run post-install validation only (no file writes)",
+    )
 
     sub.add_parser(
         "check",
@@ -836,7 +989,7 @@ def _cli() -> int:
 
     if args.cmd == "install":
         try:
-            return cmd_install(args.ide, args.dry_run)
+            return cmd_install(args.ide, args.dry_run, validate_only=args.validate)
         except CuriosInstallError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 1

@@ -21,8 +21,8 @@ Curios passively indexes your agent conversation transcripts into a local semant
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Zero effort**     | Indexing happens automatically when a Cursor session closes — no saving, no tagging, no manual organization                                                                                                                                                        |
 | **Zero extra cost** | Local embeddings, no external API calls. No summarization — conversations are stored verbatim, preserving full fidelity and avoiding the API cost and information loss that summarization would introduce. Retrieval uses the Cursor LLM you're already paying for |
-| **Fully local**     | Single per-user data directory (see [Data directory](#data-directory)) — no Docker, no background services, no extra API keys                                                                                                                                   |
-| **Lean surface**    | Three read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                       |
+| **Fully local**     | Single per-user data directory (see [Data directory](#data-directory)) — no Docker, no background services, no extra API keys                                                                                                                                      |
+| **Lean surface**    | Three read-only MCP tools. Projects and topics inferred automatically from file paths and conversation content                                                                                                                                                     |
 
 
 > *Store everything raw, make it findable, cost nothing extra, require zero user effort.*
@@ -46,10 +46,10 @@ uv tool install git+https://github.com/jlbgit/Curios
 This creates an isolated virtual environment and places two user-facing entry points on your PATH at `~/.local/bin/` (plus `curios-server`, which Cursor invokes directly):
 
 
-| Command           | Purpose                                                         |
-| ----------------- | --------------------------------------------------------------- |
-| `curios`          | Unified CLI: IDE integration, indexing, maintenance, recovery   |
-| `curios-server`   | MCP server (started by Cursor)                                  |
+| Command         | Purpose                                                       |
+| --------------- | ------------------------------------------------------------- |
+| `curios`        | Unified CLI: IDE integration, indexing, maintenance, recovery |
+| `curios-server` | MCP server (started by Cursor / Claude Code); `--version` prints the package version |
 
 
 ### Step 2: Configure Cursor
@@ -58,18 +58,31 @@ This creates an isolated virtual environment and places two user-facing entry po
 curios install
 ```
 
-This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs two skills to `~/.cursor/skills/`:
+This merges curios into `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, copies the AI rule to `~/.cursor/rules/`, and installs two skills to `~/.cursor/skills/`. If `~/.claude` exists (Claude Code), the same command also updates `~/.claude.json`, session hooks, `CLAUDE.md`, and packaged skills there.
 
 - `**curios-install**` — guides the agent through end-to-end setup conversationally.
 - `**curios-keyword-discovery**` — scans real conversation transcripts to discover topic keywords missing from the default set. Run it periodically or after indexing new projects to expand topic coverage; discovered phrases are saved to `custom_keywords.json` (merged at runtime, never edits source defaults).
 
 Only the `curios` entries are touched — other MCP servers, hooks, and rules are preserved. Creates `.bak` backups before modifying any file. Safe to re-run after a reinstall or path change.
 
+On a real install (not `--dry-run`), Curios also:
+
+- Warns if free space under `CURIOS_DATA` is low (below 250 MB), since indexing needs room for Chroma and SQLite.
+- Warns if an existing `curios` MCP entry pointed at a different `curios-server` binary before overwriting it (non-fatal; useful after moving `uv`’s bin directory or switching machines).
+- Runs a short **post-install validation** (binaries on PATH, MCP and hook entries match, server responds to `curios-server --version`, disk headroom again as a reminder). Fatal problems exit with code 1; server or disk warnings are printed but do not fail the install.
+
+To re-run validation without writing any files:
+
+```bash
+curios install --validate
+# optional: curios install cursor --validate   or   curios install claude --validate
+```
+
 **Restart Cursor** after running this.
 
 `curios uninstall` removes only Curios wiring inside Cursor (MCP entry, `sessionEnd` hook, `rules/curios.mdc`, and the two packaged skills). It does **not** remove the `uv` tool, binaries, or anything under your data directory (`CURIOS_DATA`; default depends on OS — see [Data directory](#data-directory)). For a complete removal, follow [Uninstallation](#uninstallation).
 
-After any `uv tool install --reinstall`, re-run `curios install` to keep the deployed rule and skills in sync with the new package. You can check whether they are current at any time:
+After any `uv tool install --reinstall`, re-run `curios install` to keep the deployed rule and skills in sync with the new package. **`curios check`** compares deployed Cursor (and Claude, if present) files to the **bundled package content** (staleness). **`curios install --validate`** checks **runtime wiring** (PATH, JSON entries, hook executability, server `--version`). Use whichever matches what you are debugging.
 
 ```bash
 curios check
@@ -157,14 +170,16 @@ The hook reads `transcript_path` from Cursor's JSON payload on stdin, queues the
 
 ## Data directory
 
-Runtime data lives under **`CURIOS_DATA`**. If unset, the default is platform-specific (created on first index run; on Unix the directory is created with owner-only permissions):
+Runtime data lives under `**CURIOS_DATA**`. If unset, the default is platform-specific (created on first index run; on Unix the directory is created with owner-only permissions):
 
-| OS | Default `CURIOS_DATA` |
-| -- | --------------------- |
-| Linux / other Unix (no `XDG_DATA_HOME`) | `~/.local/share/curios` |
-| Linux / BSD with `XDG_DATA_HOME` | `$XDG_DATA_HOME/curios` |
-| macOS | `~/Library/Application Support/curios` |
-| Windows | `%LOCALAPPDATA%\curios` (or `~\AppData\Local\curios` if `LOCALAPPDATA` is unset) |
+
+| OS                                      | Default `CURIOS_DATA`                                                            |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| Linux / other Unix (no `XDG_DATA_HOME`) | `~/.local/share/curios`                                                          |
+| Linux / BSD with `XDG_DATA_HOME`        | `$XDG_DATA_HOME/curios`                                                          |
+| macOS                                   | `~/Library/Application Support/curios`                                           |
+| Windows                                 | `%LOCALAPPDATA%\curios` (or `~\AppData\Local\curios` if `LOCALAPPDATA` is unset) |
+
 
 Example layout on Linux (paths are the same relative names under `CURIOS_DATA` everywhere):
 
@@ -187,23 +202,23 @@ Example layout on Linux (paths are the same relative names under `CURIOS_DATA` e
 All paths are defined in `src/curios/config.py` with sensible defaults. You can override them with environment variables for non-standard setups:
 
 
-| Variable             | Default                  | Purpose                                                                                |
-| -------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
+| Variable             | Default                            | Purpose                                                                                |
+| -------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- |
 | `CURIOS_DATA`        | Platform default (see table above) | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
-| `CURIOS_CURSOR_HOME` | `~/.cursor/`             | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
+| `CURIOS_CURSOR_HOME` | `~/.cursor/`                       | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
 
 
 Derived paths (not independently configurable — they follow `CURIOS_DATA`):
 
 
-| Path                               | Derived from  | Content                               |
-| ---------------------------------- | ------------- | ------------------------------------- |
-| `$CURIOS_DATA/chromadb/`           | `CURIOS_DATA` | ChromaDB vector database              |
-| `$CURIOS_DATA/preferences.md`      | `CURIOS_DATA` | User preferences file                 |
+| Path                               | Derived from  | Content                                                     |
+| ---------------------------------- | ------------- | ----------------------------------------------------------- |
+| `$CURIOS_DATA/chromadb/`           | `CURIOS_DATA` | ChromaDB vector database                                    |
+| `$CURIOS_DATA/preferences.md`      | `CURIOS_DATA` | User preferences file                                       |
 | `$CURIOS_DATA/sentinels.db`        | `CURIOS_DATA` | Incremental index state + conversation recap cache (SQLite) |
 | `$CURIOS_DATA/bm25.db`             | `CURIOS_DATA` | BM25 / FTS5 index for hybrid search (SQLite)                |
-| `$CURIOS_DATA/schema_version.json` | `CURIOS_DATA` | Schema migration state                |
-| `$CURIOS_DATA/.index.lock`         | `CURIOS_DATA` | Advisory lock for concurrent indexing |
+| `$CURIOS_DATA/schema_version.json` | `CURIOS_DATA` | Schema migration state                                      |
+| `$CURIOS_DATA/.index.lock`         | `CURIOS_DATA` | Advisory lock for concurrent indexing                       |
 
 
 To use a custom data location, export the variable before running any curios command:
@@ -278,30 +293,26 @@ Do all of the following, in order:
 
 1. **Disconnect from Cursor** (above).
 2. **Remove the `uv` tool** (binaries and its isolated environment):
-
-   ```bash
+  ```bash
    uv tool uninstall curios
-   ```
-
+  ```
 3. **Delete the data directory** (ChromaDB, SQLite indexes, logs, `custom_keywords.json`, `project_overrides.json`, etc.). Remove the directory tree for your effective `CURIOS_DATA` (see [Data directory](#data-directory) for defaults). On Unix:
-
-   ```bash
+  ```bash
    rm -rf ~/.local/share/curios
-   ```
-
+  ```
    On macOS the default is `~/Library/Application Support/curios`; on Windows, remove `%LOCALAPPDATA%\curios` (Explorer or `Remove-Item -Recurse`). If you use a custom location, remove that tree instead.
 
-**Not covered by Curios itself:** environment variables (`CURIOS_*`, etc.) in shell profiles; any rules or skills you copied by hand outside the paths `curios install` manages; Cursor’s own per-project MCP cache under `~/.cursor/projects/` (refreshes over time or after restart).
+**Not covered by Curios itself:** environment variables (`CURIOS_`*, etc.) in shell profiles; any rules or skills you copied by hand outside the paths `curios install` manages; Cursor’s own per-project MCP cache under `~/.cursor/projects/` (refreshes over time or after restart).
 
 ## MCP Tools
 
 Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_search`, `curios_recap`, `curios_related`, `curios_status`, `curios_preferences`); `curios_status` and `curios_preferences` were removed to keep the tool surface minimal — use `curios status` and edit `preferences.md` directly instead.
 
 
-| Tool             | Purpose                                                                                            | When to use                                                           |
-| ---------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `curios_recap`   | Most recent conversations for a project, time-ordered. Session-start briefing.                     | "Where did we leave off", session start, recent project context.      |
-| `curios_search`  | Semantic search across indexed transcripts (cross-project).                                        | User asks about prior decisions, patterns, preferences, or history.   |
+| Tool             | Purpose                                                                                                        | When to use                                                            |
+| ---------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `curios_recap`   | Most recent conversations for a project, time-ordered. Session-start briefing.                                 | "Where did we leave off", session start, recent project context.       |
+| `curios_search`  | Semantic search across indexed transcripts (cross-project).                                                    | User asks about prior decisions, patterns, preferences, or history.    |
 | `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
 
 
@@ -312,14 +323,14 @@ The MCP server is strictly read-only. Indexing and maintenance are done via CLI 
 **Parameters:**
 
 
-| Param             | Default | Effect                                                                                              |
-| ----------------- | ------- | --------------------------------------------------------------------------------------------------- |
-| `query`           | *(required)* | Natural-language semantic query                                                                |
-| `project`         | `null`  | Limit to one project (e.g. `"MyApp"`). Omit for cross-project.                                      |
-| `topic`           | `null`  | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
-| `strict`          | `false` | If true, hard-exclude `incremental` chunks (only truly novel content)                               |
-| `include_shallow` | `false` | If true, include conversations with < 2 user messages                                               |
-| `n_results`       | `5`     | Max results returned                                                                                |
+| Param             | Default      | Effect                                                                                              |
+| ----------------- | ------------ | --------------------------------------------------------------------------------------------------- |
+| `query`           | *(required)* | Natural-language semantic query                                                                     |
+| `project`         | `null`       | Limit to one project (e.g. `"MyApp"`). Omit for cross-project.                                      |
+| `topic`           | `null`       | Filter: `decisions`, `architecture`, `learnings`, `problems`, `preferences`, `ideas`, `open_issues` |
+| `strict`          | `false`      | If true, hard-exclude `incremental` chunks (only truly novel content)                               |
+| `include_shallow` | `false`      | If true, include conversations with < 2 user messages                                               |
+| `n_results`       | `5`          | Max results returned                                                                                |
 
 
 **Default behavior** (`strict=false`, `include_shallow=false`):
@@ -493,7 +504,7 @@ tests/
   test_server.py           # retrieval helpers + MCP tool JSON (mocked Chroma)
   test_maintain.py         # prune, build-bm25, status/report/verify/repair (tmp Chroma)
   test_cli.py              # unified `curios` CLI: argv errors, export/import, --help
-  test_install.py          # Cursor integration: staleness, install/uninstall under tmp ~/.cursor
+  test_install.py          # IDE integration: staleness, install/uninstall, post-install validation (tmp homes)
   test_integration.py      # E2E: synthetic transcripts → index → search/recap/related
   test_mcp_interactions.py # live smoke + concurrency (@pytest.mark.live)
   test_token_savings.py    # live token benchmark (@pytest.mark.live @pytest.mark.benchmark)
@@ -504,17 +515,19 @@ Default runs use isolated `tmp_path` data dirs (Chroma + SQLite). No `curios ind
 
 ### Markers
 
-| Marker | Files | What it tests |
-| --- | --- | --- |
-| `config` | `test_config` | Redaction, project slugs, paths, keywords, env overrides |
-| `indexing` | `test_indexer`, `test_queue_and_catchup` | Transcript parsing, chunking, topics, discovery, queue, session hook, catch-up |
-| `storage` | `test_bm25`, `test_sentinels` | BM25 FTS5 sidecar, sentinels recap cache, mtime tracking |
-| `server` | `test_server` | Retrieval helpers, RRF fusion, MCP tool output shape (mocked DB) |
-| `integration` | `test_integration` | Synthetic transcripts → index → search/recap/related |
-| `maintenance` | `test_maintain` | Prune shallow/stale/project, build-bm25, status/report/verify/repair |
-| `cli` | `test_cli`, `test_install` | `curios` argv routing; Cursor `~/.cursor/` install/check/uninstall (tmp home) |
-| `live` | `test_mcp_interactions`, `test_token_savings` | Real `CURIOS_DATA` index; **skipped by default** — run `pytest -m live` |
-| `benchmark` | `test_token_savings` | Token cost comparison; **skipped by default** — run `pytest -m benchmark` |
+
+| Marker        | Files                                         | What it tests                                                                  |
+| ------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `config`      | `test_config`                                 | Redaction, project slugs, paths, keywords, env overrides                       |
+| `indexing`    | `test_indexer`, `test_queue_and_catchup`      | Transcript parsing, chunking, topics, discovery, queue, session hook, catch-up |
+| `storage`     | `test_bm25`, `test_sentinels`                 | BM25 FTS5 sidecar, sentinels recap cache, mtime tracking                       |
+| `server`      | `test_server`                                 | Retrieval helpers, RRF fusion, MCP tool output shape (mocked DB)               |
+| `integration` | `test_integration`                            | Synthetic transcripts → index → search/recap/related                           |
+| `maintenance` | `test_maintain`                               | Prune shallow/stale/project, build-bm25, status/report/verify/repair           |
+| `cli`         | `test_cli`, `test_install`                    | `curios` argv routing; Cursor/Claude install, check, uninstall, validation (tmp homes)  |
+| `live`        | `test_mcp_interactions`, `test_token_savings` | Real `CURIOS_DATA` index; **skipped by default** — run `pytest -m live`        |
+| `benchmark`   | `test_token_savings`                          | Token cost comparison; **skipped by default** — run `pytest -m benchmark`      |
+
 
 ### Live-DB tests
 
@@ -524,16 +537,18 @@ Both `live`-marked modules hit your real **CURIOS_DATA** index (run `curios inde
 uv run pytest -m live -v
 ```
 
-| File | Needs |
-| --- | --- |
-| `test_mcp_interactions.py` | Populated Chroma collection only. |
-| `test_token_savings.py` | Populated **CURIOS_DATA** Chroma; **`CURIOS_EVAL_PROJECTS`** (comma-separated logical project names); JSONL transcripts under **`TRANSCRIPTS_BASE`** for those projects. |
 
-Export variables in the shell, for example: `export CURIOS_EVAL_PROJECTS=MyApp,OtherRepo`. The benchmark also merges **`tests/eval/.env`** into the environment **if that file exists** (optional convenience when you have a local `tests/eval/` tree).
+| File                       | Needs                                                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `test_mcp_interactions.py` | Populated Chroma collection only.                                                                                                                                        |
+| `test_token_savings.py`    | Populated **CURIOS_DATA** Chroma; `**CURIOS_EVAL_PROJECTS`** (comma-separated logical project names); JSONL transcripts under `**TRANSCRIPTS_BASE**` for those projects. |
+
+
+Export variables in the shell, for example: `export CURIOS_EVAL_PROJECTS=MyApp,OtherRepo`. The benchmark also merges `**tests/eval/.env**` into the environment **if that file exists** (optional convenience when you have a local `tests/eval/` tree).
 
 ### Eval pipeline (`tests/eval/`)
 
-The eval folder is **excluded by default** (`--ignore=tests/eval` in `pyproject.toml`). Clones without `tests/eval/` still pass **`uv run pytest`**. If you add or checkout that tree locally:
+The eval folder is **excluded by default** (`--ignore=tests/eval` in `pyproject.toml`). Clones without `tests/eval/` still pass `**uv run pytest`**. If you add or checkout that tree locally:
 
 ```bash
 uv sync --group eval
@@ -541,14 +556,16 @@ uv sync --group eval
 uv run pytest tests/eval/test_rag_quality.py -s --override-ini="addopts="
 ```
 
-Eval scripts read shared constants from **`tests/eval/_config.py`** when present.
+Eval scripts read shared constants from `**tests/eval/_config.py**` when present.
 
 ### Gitignored (tests-related)
 
-| Path | Reason |
-| --- | --- |
-| `tests/eval/.env` | API key + project names |
+
+| Path                   | Reason                  |
+| ---------------------- | ----------------------- |
+| `tests/eval/.env`      | API key + project names |
 | `tests/eval/fixtures/` | Generated eval fixtures |
+
 
 Contributions improving relevancy and recall are very welcome!
 

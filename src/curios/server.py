@@ -672,6 +672,11 @@ def curios_related(
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
+        from curios import __version__
+
+        print(__version__)
+        return
     try:
         from curios.install import staleness_report
         stale = [pkg for pkg, _, is_stale in staleness_report() if is_stale]
