@@ -5,6 +5,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import subprocess
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -13,6 +16,7 @@ import pytest
 from curios import bm25, sentinels
 from curios.config import SCHEMA_VERSION
 from curios.indexer import (
+    index_lock,
     _chunk_exchange,
     _hard_split_oversized,
     _line_text,
@@ -32,6 +36,60 @@ def test_conversation_topics_label_removed():
     import curios.indexer as idx
 
     assert not hasattr(idx, "_conversation_topics_label")
+
+
+def test_index_lock_reentrant_nested(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Nested index_lock() in one thread must not deadlock (catch-up + run_index)."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    with index_lock():
+        with index_lock():
+            pass
+
+
+def test_index_lock_excludes_concurrent_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """flock serializes writers across processes (MCP vs CLI)."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    data = tmp_path / "curios_data"
+    src = Path(__file__).resolve().parents[1] / "src"
+    ready = data / ".lock_holder_ready"
+    child = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import curios.config as cfg
+import curios.indexer as idx
+from curios.indexer import index_lock
+data = Path(sys.argv[2])
+ready = Path(sys.argv[3])
+cfg.CURIOS_DATA = data
+cfg.LOCK_PATH = data / ".index.lock"
+cfg.CHROMADB_PATH = data / "chromadb"
+idx.CURIOS_DATA = data
+idx.LOCK_PATH = cfg.LOCK_PATH
+idx.CHROMADB_PATH = cfg.CHROMADB_PATH
+data.mkdir(parents=True, exist_ok=True)
+with index_lock():
+    ready.write_text("1", encoding="utf-8")
+    time.sleep(2)
+"""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", child, str(src), str(data), str(ready)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.is_file(), "child did not acquire index lock in time"
+        start = time.monotonic()
+        with index_lock():
+            waited = time.monotonic() - start
+    finally:
+        holder.wait(timeout=10)
+    assert waited >= 1.0
 
 
 def test_continuation_chunks_include_user_asked_preamble(monkeypatch):

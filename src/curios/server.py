@@ -318,7 +318,8 @@ def _catch_up_index() -> None:
         if not unindexed:
             return
         log.info("catch-up: %d transcript(s) to index", len(unindexed))
-        files_done, chunks = run_index(unindexed, force=True, dry_run=False)
+        with index_lock():
+            files_done, chunks = run_index(unindexed, force=True, dry_run=False)
         if files_done:
             log.info("catch-up: indexed %d files (%d chunks)", files_done, chunks)
             _reset_client()

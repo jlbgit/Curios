@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import re
 import json
 import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +26,7 @@ from curios.config import (
     CURIOS_DATA,
     INDEX_LOG_PATH,
     LOCK_PATH,
+    LOCK_TIMEOUT_S,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
     NOVELTY_N_RESULTS,
@@ -59,8 +62,21 @@ _LOGGED_PROJECT_SLUGS: set[str] = set()
 NOVELTY_DISTANCE_MAX = 1.0 - NOVELTY_THRESHOLD
 
 
+_lock_local = threading.local()
+
+
 @contextmanager
 def index_lock() -> Iterator[None]:
+    """Reentrant file-based lock. Safe to nest within the same thread."""
+    depth = getattr(_lock_local, "depth", 0)
+    if depth > 0:
+        _lock_local.depth = depth + 1
+        try:
+            yield
+        finally:
+            _lock_local.depth -= 1
+        return
+
     ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
@@ -71,8 +87,10 @@ def index_lock() -> Iterator[None]:
         fp.seek(0)
         try:
             msvcrt.locking(fp.fileno(), msvcrt.LK_LOCK, 1)
+            _lock_local.depth = 1
             yield
         finally:
+            _lock_local.depth = 0
             try:
                 fp.seek(0)
                 msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
@@ -84,9 +102,26 @@ def index_lock() -> Iterator[None]:
 
         fp = open(LOCK_PATH, "a+", encoding="utf-8")
         try:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            delay = 0.05
+            while True:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"curios index lock held for >{LOCK_TIMEOUT_S}s"
+                        ) from e
+                    time.sleep(min(delay, remaining))
+                    delay = min(delay * 2, 1.0)
+            _lock_local.depth = 1
             yield
         finally:
+            _lock_local.depth = 0
             try:
                 fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
             except OSError:

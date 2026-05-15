@@ -17,6 +17,7 @@ from curios.config import (
     CLAUDE_SETTINGS_PATH,
     CURSOR_HOME,
     LAST_INDEXED_PATH,
+    LOCK_PATH,
     SESSION_HOOK_TIMEOUT,
     set_owner_only_permissions,
 )
@@ -174,13 +175,14 @@ def _remove_claude_session_end_hook(settings: dict) -> bool:
     return removed
 
 
-def _has_curios_claude_session_hook(settings: dict, curios_bin: str | None) -> bool:
-    """Check whether the Claude settings contain a current Curios SessionEnd hook."""
+def _has_curios_claude_session_hook(settings: dict) -> bool:
+    """Check whether the Claude settings contain a working Curios SessionEnd hook."""
     for group in settings.get("hooks", {}).get("SessionEnd", []):
         for h in group.get("hooks", []):
             if not _is_curios_claude_hook_handler(h):
                 continue
-            if curios_bin and h.get("command") != f"{curios_bin} index --session-hook":
+            stored_bin = (h.get("command") or "").split()[0]
+            if stored_bin and not (Path(stored_bin).is_file() and os.access(stored_bin, os.X_OK)):
                 return False
             return True
     return False
@@ -287,18 +289,13 @@ def claude_staleness_report(
     home = claude_home or CLAUDE_HOME
     json_path = claude_json or CLAUDE_JSON_PATH
     settings_path = claude_settings or CLAUDE_SETTINGS_PATH
-    want_cmd = _try_which("curios-server")
-    curios_cmd = _try_which("curios")
     results: list[tuple[str, Path, bool]] = []
     cfg = _load_json(json_path)
     mcp = cfg.get("mcpServers") if isinstance(cfg.get("mcpServers"), dict) else {}
     entry = mcp.get("curios") if isinstance(mcp, dict) else None
-    if not want_cmd:
-        results.append(("claude.json MCP curios", json_path, True))
-    elif not isinstance(entry, dict) or entry.get("command") != want_cmd:
-        results.append(("claude.json MCP curios", json_path, True))
-    else:
-        results.append(("claude.json MCP curios", json_path, False))
+    stored_cmd = entry.get("command") if isinstance(entry, dict) else None
+    cmd_ok = bool(stored_cmd and Path(stored_cmd).is_file() and os.access(stored_cmd, os.X_OK))
+    results.append(("claude.json MCP curios", json_path, not cmd_ok))
 
     md_path = home / "CLAUDE.md"
     snippet = _package_claude_append()
@@ -312,7 +309,7 @@ def claude_staleness_report(
     results.append(("CLAUDE.md Curios section", md_path, not inner_ok))
 
     settings_cfg = _load_json(settings_path)
-    hook_ok = _has_curios_claude_session_hook(settings_cfg, curios_cmd)
+    hook_ok = _has_curios_claude_session_hook(settings_cfg)
     results.append(("settings.json SessionEnd hook", settings_path, not hook_ok))
 
     for pkg_name, rel_path in _CLAUDE_SKILL_DEPLOYMENTS:
@@ -492,6 +489,8 @@ def cmd_install(ide: str | None, dry_run: bool = False) -> int:
     if not did_any:
         print("ERROR: No supported IDE directories found; nothing installed.", file=sys.stderr)
         return 1
+    if not dry_run:
+        LOCK_PATH.unlink(missing_ok=True)
     return 0
 
 

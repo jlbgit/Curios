@@ -83,6 +83,7 @@ PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference not
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
 PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json" # slug→friendly-name mapping
 LOCK_PATH = CURIOS_DATA / ".index.lock"           # flock file for concurrent indexer safety
+LOCK_TIMEOUT_S: int = int(os.environ.get("CURIOS_LOCK_TIMEOUT_S", "5"))
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"  # tracks DB schema migrations
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"        # stdout/stderr from background indexer
 LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"    # timestamp of last successful run

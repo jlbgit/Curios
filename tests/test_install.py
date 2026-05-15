@@ -185,11 +185,19 @@ def test_claude_staleness_report_ok_after_claude_install(
     ch.mkdir()
     cj = tmp_path / "claude.json"
     cj.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("curios-server", "curios"):
+        f = fake_bin / name
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+
     monkeypatch.setattr(install, "CLAUDE_HOME", ch)
     monkeypatch.setattr(install, "CLAUDE_JSON_PATH", cj)
     monkeypatch.setattr(install, "CLAUDE_SETTINGS_PATH", ch / "settings.json")
-    monkeypatch.setattr(install, "_resolve_binary", lambda name: f"/fake/bin/{name}")
-    monkeypatch.setattr(install, "_try_which", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(install, "_resolve_binary", lambda name: str(fake_bin / name))
+    monkeypatch.setattr(install, "_try_which", lambda name: str(fake_bin / name))
 
     assert install.cmd_claude_install(claude_home=ch, claude_json=cj) == 0
     report = install.claude_staleness_report(claude_home=ch, claude_json=cj, claude_settings=ch / "settings.json")
