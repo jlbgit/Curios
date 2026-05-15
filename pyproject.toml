@@ -1,7 +1,7 @@
 [project]
 name = "curios"
 version = "0.6.1"
-description = "Cross-project transcript memory for Cursor IDE"
+description = "Cross-project transcript memory for Cursor IDE and Claude Code"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "jlbgit"}]
@@ -23,7 +23,6 @@ dependencies = [
     "chromadb>=1.0",
     "mcp>=1.0",
     "pydantic>=2.0",
-    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -63,7 +62,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-curios = ["cursor/*.mdc", "cursor/*.md"]
+curios = ["cursor/*.mdc", "cursor/*.md", "claude/*.md"]
 
 [dependency-groups]
 dev = [
