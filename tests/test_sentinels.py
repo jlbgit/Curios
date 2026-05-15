@@ -107,6 +107,56 @@ def test_get_recent_conversations_since_ts_empty_window():
     assert rows == []
 
 
+def test_get_conversations_by_ids_returns_metadata():
+    sentinels.upsert_conversation(
+        conversation_id="aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee",
+        project="P1",
+        mtime=555,
+        exchange_count=2,
+        depth="standard",
+        topics="decisions,ideas",
+        preview="hi",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="bbbbbbbb-cccc-4ddd-eeee-ffffffffffff",
+        project="P2",
+        mtime=777,
+        exchange_count=1,
+        depth="standard",
+        topics="architecture",
+        preview="yo",
+    )
+    out = sentinels.get_conversations_by_ids(
+        [
+            "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee",
+            "bbbbbbbb-cccc-4ddd-eeee-ffffffffffff",
+        ]
+    )
+    assert out["aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee"]["mtime"] == 555
+    assert out["aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee"]["topics"] == "decisions,ideas"
+    assert out["bbbbbbbb-cccc-4ddd-eeee-ffffffffffff"]["project"] == "P2"
+
+
+def test_get_conversations_by_ids_empty_input():
+    assert sentinels.get_conversations_by_ids([]) == {}
+
+
+def test_get_conversations_by_ids_unknown_id_omitted():
+    sentinels.upsert_conversation(
+        conversation_id="known-uuuu-uuuu-4uuu-uuuuuuuuuuuu",
+        project="P",
+        mtime=1,
+        exchange_count=1,
+        depth="standard",
+        topics="general",
+        preview="x",
+    )
+    out = sentinels.get_conversations_by_ids(
+        ["known-uuuu-uuuu-4uuu-uuuuuuuuuuuu", "missing-uuuu-uuuu-4uuu-uuuuuuuuuuuu"]
+    )
+    assert set(out.keys()) == {"known-uuuu-uuuu-4uuu-uuuuuuuuuuuu"}
+
+
 def test_get_recent_conversations_since_ts_none_unchanged():
     sentinels.upsert_conversation(
         conversation_id="a",

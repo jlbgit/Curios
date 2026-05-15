@@ -177,3 +177,51 @@ def test_cli_verify_runs(curios_data_env, monkeypatch: pytest.MonkeyPatch) -> No
     x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
 
     assert _run_main(monkeypatch, ["curios", "verify"]) == 0
+
+
+def test_cli_search_routes_to_cmd_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
+        calls.append((q, p, n, snippet_chars))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert _run_main(monkeypatch, ["curios", "search", "foo", "bar"]) == 0
+    assert calls == [("foo bar", None, 5, 320)]
+
+
+def test_cli_search_project_and_n_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
+        calls.append((q, p, n, snippet_chars))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert (
+        _run_main(
+            monkeypatch,
+            ["curios", "search", "foo", "--project", "X", "--n", "3"],
+        )
+        == 0
+    )
+    assert calls == [("foo", "X", 3, 320)]
+
+
+def test_cli_search_chars_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int) -> int:
+        calls.append((q, p, n, snippet_chars))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert _run_main(monkeypatch, ["curios", "search", "q", "--chars", "900"]) == 0
+    assert calls == [("q", None, 5, 900)]

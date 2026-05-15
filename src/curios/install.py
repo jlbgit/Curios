@@ -56,6 +56,9 @@ examples (commands above follow the same order: setup → index → inspect → 
   # Conversations active in the last N hours (recap cache; no vector search).
   curios recent
   curios recent --hours 72 --project Curios
+  curios search "concurrency locking"
+  curios search RAG improvements --project Curios --n 10
+  curios search Neo4j driver --chars 800
   # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, permissions, schema file on disk).
   curios verify
   # Run verify logic, then apply safe auto-fixes (BM25 drift, orphan rows, missing schema file).
@@ -952,6 +955,31 @@ def _cli() -> int:
     rec_p.add_argument("--project", type=str, default=None, metavar="NAME")
     rec_p.add_argument("--n", type=int, default=10, metavar="N", dest="n_results")
 
+    src_p = sub.add_parser(
+        "search",
+        help="Keyword search across indexed conversations (BM25, no AI required)",
+        description=(
+            "Fast full-text search against the local BM25 index. "
+            "No ChromaDB or embedding model needed."
+        ),
+    )
+    src_p.add_argument(
+        "query",
+        nargs="+",
+        metavar="WORD",
+        help="Search terms (no quotes needed)",
+    )
+    src_p.add_argument("--project", type=str, default=None, metavar="NAME")
+    src_p.add_argument("--n", type=int, default=5, metavar="N", dest="n_results")
+    src_p.add_argument(
+        "--chars",
+        type=int,
+        default=320,
+        metavar="N",
+        dest="snippet_chars",
+        help="Max characters shown per hit (default 320; cap 12000)",
+    )
+
     sub.add_parser(
         "verify",
         help="Read-only audit: Chroma metadata, BM25 row parity, recap/sentinel drift, permissions, schema file",
@@ -1067,6 +1095,14 @@ def _cli() -> int:
 
     if args.cmd == "recent":
         return cmd_recent(args.hours, args.project, args.n_results)
+
+    if args.cmd == "search":
+        return maintain.cmd_search(
+            " ".join(args.query),
+            args.project,
+            args.n_results,
+            args.snippet_chars,
+        )
 
     if args.cmd == "status":
         return maintain.cmd_status()

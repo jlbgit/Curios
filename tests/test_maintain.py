@@ -461,3 +461,133 @@ def test_collect_verify_report_missing_chroma_dir(curios_data_env, monkeypatch):
     rep = maintain.collect_verify_report()
     assert rep.chroma_dir_missing
     assert rep.chroma_collection_missing is False
+
+
+def test_cmd_search_no_bm25_results(curios_data_env, capsys):
+    from curios import maintain
+
+    assert maintain.cmd_search("notintheindexzz", None, 5) == 0
+    assert 'no results for "notintheindexzz"' in capsys.readouterr().out
+
+
+def test_cmd_search_prints_hits(curios_data_env, capsys):
+    from curios import maintain
+
+    cid = "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee"
+    chunk_id = f"curios_P_{cid}_0"
+    bm25.insert(chunk_id, "uniqueZebra snippet for cli search", "P")
+    sentinels.upsert_conversation(
+        conversation_id=cid,
+        project="P",
+        mtime=1_700_000_000,
+        exchange_count=2,
+        depth="standard",
+        topics="architecture",
+        preview="preview",
+    )
+    assert maintain.cmd_search("uniqueZebra", None, 5) == 0
+    out = capsys.readouterr().out
+    assert "uniqueZebra" in out
+    assert "architecture" in out
+    assert "P" in out
+
+
+def test_cmd_search_project_filter(curios_data_env, capsys):
+    from curios import maintain
+
+    cid_a = "11111111-1111-4111-8111-111111111111"
+    cid_b = "22222222-2222-4222-8222-222222222222"
+    bm25.insert_many(
+        [
+            (f"curios_OnlyA_{cid_a}_0", "sharedfiltertoken alpha", "OnlyA"),
+            (f"curios_OnlyB_{cid_b}_0", "sharedfiltertoken beta", "OnlyB"),
+        ]
+    )
+    sentinels.upsert_conversation(
+        conversation_id=cid_a,
+        project="OnlyA",
+        mtime=100,
+        exchange_count=1,
+        depth="standard",
+        topics="general",
+        preview="a",
+    )
+    sentinels.upsert_conversation(
+        conversation_id=cid_b,
+        project="OnlyB",
+        mtime=200,
+        exchange_count=1,
+        depth="standard",
+        topics="general",
+        preview="b",
+    )
+    assert maintain.cmd_search("sharedfiltertoken", "OnlyA", 10) == 0
+    out = capsys.readouterr().out
+    assert "OnlyA" in out
+    assert "OnlyB" not in out
+
+
+def test_cmd_search_deduplicates_by_conversation(curios_data_env, capsys):
+    from curios import maintain
+
+    cid = "33333333-3333-4333-8333-333333333333"
+    bm25.insert_many(
+        [
+            (f"curios_P_{cid}_0", "deduptoken first hit", "P"),
+            (f"curios_P_{cid}_1", "deduptoken second hit", "P"),
+        ]
+    )
+    sentinels.upsert_conversation(
+        conversation_id=cid,
+        project="P",
+        mtime=50,
+        exchange_count=2,
+        depth="standard",
+        topics="problems",
+        preview="x",
+    )
+    assert maintain.cmd_search("deduptoken", None, 5) == 0
+    out = capsys.readouterr().out
+    assert out.count("33333333-3333-4333-8333-333333333333") <= 1
+    assert "+1 more chunk" in out
+
+
+def test_cmd_search_snippet_no_ellipsis_when_full_text_fits(curios_data_env, capsys):
+    from curios import maintain
+
+    cid = "44444444-4444-4444-8444-444444444444"
+    bm25.insert(f"curios_P_{cid}_0", "brief uniqueellipsisprobe", "P")
+    sentinels.upsert_conversation(
+        conversation_id=cid,
+        project="P",
+        mtime=1,
+        exchange_count=1,
+        depth="standard",
+        topics="general",
+        preview="p",
+    )
+    maintain.cmd_search("uniqueellipsisprobe", None, 5, snippet_chars=500)
+    body = capsys.readouterr().out
+    assert "brief uniqueellipsisprobe" in body
+    assert "brief uniqueellipsisprobe…" not in body
+
+
+def test_cmd_search_snippet_ellipsis_when_truncated(curios_data_env, capsys):
+    from curios import maintain
+
+    cid = "55555555-5555-4555-8555-555555555555"
+    long_text = "x" * 200 + " uniquelongprobe endzone"
+    bm25.insert(f"curios_P_{cid}_0", long_text, "P")
+    sentinels.upsert_conversation(
+        conversation_id=cid,
+        project="P",
+        mtime=1,
+        exchange_count=1,
+        depth="standard",
+        topics="general",
+        preview="p",
+    )
+    maintain.cmd_search("uniquelongprobe", None, 5, snippet_chars=80)
+    body = capsys.readouterr().out
+    assert "…" in body
+    assert "endzone" not in body

@@ -323,6 +323,24 @@ def get_recent_conversations(
     return out
 
 
+def get_conversations_by_ids(conversation_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Return mtime/topics/project for a set of conversation_ids (for CLI display)."""
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            f"SELECT conversation_id, project, mtime, topics "
+            f"FROM conversations WHERE conversation_id IN ({placeholders})",
+            conversation_ids,
+        ).fetchall()
+    return {
+        str(r[0]): {"project": str(r[1]), "mtime": int(r[2]), "topics": str(r[3])}
+        for r in rows if r
+    }
+
+
 def get_index_stats(projects: list[str] | None = None) -> dict[str, Any]:
     """Aggregate conversation counts and topic hints per project (all conversations).
 

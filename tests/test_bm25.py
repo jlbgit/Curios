@@ -59,6 +59,30 @@ def test_search_without_project(curios_data_env):
     assert "z1" in ids
 
 
+def test_search_with_text_returns_tuples(curios_data_env):
+    bm25.insert("c1", "alpha beta uniquebm25snippet", "P1")
+    rows = bm25.search_with_text("uniquebm25snippet", ["P1"], 5)
+    assert rows == [("c1", "alpha beta uniquebm25snippet", "P1")]
+
+
+def test_search_with_text_no_match_returns_empty(curios_data_env):
+    bm25.insert("c1", "alpha beta", "P1")
+    assert bm25.search_with_text("nonexistenttokenzzzz", ["P1"], 5) == []
+
+
+def test_search_with_text_project_filter(curios_data_env):
+    bm25.insert_many(
+        [
+            ("a", "sharedtoken filterproj", "Aproj"),
+            ("b", "sharedtoken filterproj", "Bproj"),
+        ]
+    )
+    only_a = bm25.search_with_text("sharedtoken", ["Aproj"], 10)
+    assert [r[0] for r in only_a] == ["a"]
+    both = bm25.search_with_text("sharedtoken", None, 10)
+    assert {r[0] for r in both} == {"a", "b"}
+
+
 def test_wipe_clears_table(curios_data_env):
     bm25.insert("k", "text", "P")
     assert bm25.count() == 1

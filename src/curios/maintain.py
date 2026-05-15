@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import tarfile
@@ -666,6 +667,63 @@ def _print_counter_rows(counter: Counter, total: int, bar_width: int = 20) -> No
 
 
 # ── commands ───────────────────────────────────────────────
+
+_CONV_UUID_RE = re.compile(
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+_SEARCH_SNIPPET_DEFAULT = 320
+_SEARCH_SNIPPET_MIN = 48
+_SEARCH_SNIPPET_MAX = 12_000
+
+
+def cmd_search(
+    query: str,
+    project: str | None,
+    n_results: int,
+    snippet_chars: int = _SEARCH_SNIPPET_DEFAULT,
+) -> int:
+    snip = max(_SEARCH_SNIPPET_MIN, min(int(snippet_chars), _SEARCH_SNIPPET_MAX))
+    resolved = sentinels.resolve_project(project) if project else None
+    hits = bm25.search_with_text(query, resolved, n_results * 3)
+    if not hits:
+        print(f'no results for "{query}"')
+        return 0
+
+    conv_order: list[str] = []
+    conv_snippets: dict[str, tuple[str, str, int, bool]] = {}
+    for chunk_id, text, proj in hits:
+        m = _CONV_UUID_RE.search(chunk_id)
+        conv_id = m.group(1) if m else chunk_id
+        if conv_id not in conv_snippets:
+            conv_order.append(conv_id)
+            collapsed = text.replace("\n", " ").strip()
+            truncated = len(collapsed) > snip
+            snippet = collapsed[:snip]
+            conv_snippets[conv_id] = (snippet, proj, 0, truncated)
+        else:
+            s, p, extra, tflag = conv_snippets[conv_id]
+            conv_snippets[conv_id] = (s, p, extra + 1, tflag)
+        if len(conv_order) >= n_results:
+            break
+
+    meta = sentinels.get_conversations_by_ids(conv_order)
+    print(f'{len(conv_order)} result(s) for "{query}"\n')
+    for conv_id in conv_order:
+        snippet, proj, extra, truncated = conv_snippets[conv_id]
+        info = meta.get(conv_id)
+        if info:
+            ts = _fmt_date(info["mtime"])
+            topics = info["topics"] or "general"
+            proj = info["project"]
+        else:
+            ts = "unknown"
+            topics = "general"
+        extra_note = f"  (+{extra} more chunk{'s' if extra != 1 else ''})" if extra else ""
+        ell = "…" if truncated else ""
+        print(f"{ts}  {proj:<14}  [{topics}]")
+        print(f"  {snippet}{ell}{extra_note}")
+        print()
+    return 0
 
 
 def cmd_status() -> int:

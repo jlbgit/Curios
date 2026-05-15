@@ -165,3 +165,33 @@ def search(query: str, projects: list[str] | None, n: int) -> list[str]:
             log.warning("FTS5 search failed (query=%r): %s", query[:80], e)
             return []
     return [str(r[0]) for r in rows if r and r[0]]
+
+
+def search_with_text(
+    query: str, projects: list[str] | None, n: int
+) -> list[tuple[str, str, str]]:
+    """Like search() but returns (chunk_id, text, project) tuples."""
+    match_expr = _fts_match_expression(query)
+    if not match_expr:
+        return []
+    with _lock:
+        conn = _get_conn()
+        try:
+            if projects:
+                placeholders = ", ".join("?" for _ in projects)
+                sql = (
+                    "SELECT chunk_id, text, project FROM chunks_fts "
+                    f"WHERE chunks_fts MATCH ? AND project IN ({placeholders}) "
+                    "ORDER BY bm25(chunks_fts) LIMIT ?"
+                )
+                rows = conn.execute(sql, (match_expr, *projects, n)).fetchall()
+            else:
+                sql = (
+                    "SELECT chunk_id, text, project FROM chunks_fts "
+                    "WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?"
+                )
+                rows = conn.execute(sql, (match_expr, n)).fetchall()
+        except sqlite3.OperationalError as e:
+            log.warning("FTS5 search_with_text failed (query=%r): %s", query[:80], e)
+            return []
+    return [(str(r[0]), str(r[1]), str(r[2])) for r in rows if r]
