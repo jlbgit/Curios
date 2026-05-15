@@ -9,9 +9,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 
+from curios import sentinels
 from curios.config import (
     CLAUDE_HOME,
     CLAUDE_JSON_PATH,
@@ -49,6 +51,9 @@ examples (commands above follow the same order: setup → index → inspect → 
   # Quick counts / last index time; long-form per-project breakdown.
   curios status
   curios report
+  # Conversations active in the last N hours (recap cache; no vector search).
+  curios recent
+  curios recent --hours 72 --project Curios
   # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, permissions, schema file on disk).
   curios verify
   # Run verify logic, then apply safe auto-fixes (BM25 drift, orphan rows, missing schema file).
@@ -232,11 +237,31 @@ def _save_json(path: Path, data: dict) -> None:
     set_owner_only_permissions(path)
 
 
+def _same_binary(a: str, b: str) -> bool:
+    """Return True if two paths run the same binary (handles pyenv shims, symlinks)."""
+    if a == b:
+        return True
+    try:
+        if Path(a).resolve() == Path(b).resolve():
+            return True
+    except OSError:
+        pass
+    # Pyenv shims are bash scripts (not symlinks), so resolve their identity via --version output.
+    try:
+        va = subprocess.run([a, "--version"], capture_output=True, text=True, timeout=5)
+        vb = subprocess.run([b, "--version"], capture_output=True, text=True, timeout=5)
+        out_a = (va.stdout or va.stderr).strip()
+        out_b = (vb.stdout or vb.stderr).strip()
+        return bool(va.returncode == 0 and vb.returncode == 0 and out_a and out_a == out_b)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _resolve_binary(name: str) -> str:
     found = shutil.which(name)
     if not found:
         raise CuriosInstallError(f"'{name}' not found on PATH. {_BINARY_HINT}")
-    return found
+    return str(Path(found).resolve())
 
 
 def _package_text(name: str) -> str:
@@ -394,7 +419,7 @@ def _validate_install(ide: str | None = None) -> int:
         mcp_cfg = _load_json(CURSOR_HOME / "mcp.json")
         stored_mcp = (mcp_cfg.get("mcpServers") or {}).get("curios", {})
         stored_cmd = stored_mcp.get("command") if isinstance(stored_mcp, dict) else None
-        mcp_ok = bool(stored_cmd and server_bin and stored_cmd == server_bin)
+        mcp_ok = bool(stored_cmd and server_bin and _same_binary(stored_cmd, server_bin))
         checks.append((
             "MCP entry matches binary (Cursor)",
             mcp_ok,
@@ -413,7 +438,7 @@ def _validate_install(ide: str | None = None) -> int:
         claude_cfg = _load_json(CLAUDE_JSON_PATH)
         stored_mcp = (claude_cfg.get("mcpServers") or {}).get("curios", {})
         stored_cmd = stored_mcp.get("command") if isinstance(stored_mcp, dict) else None
-        mcp_ok = bool(stored_cmd and server_bin and stored_cmd == server_bin)
+        mcp_ok = bool(stored_cmd and server_bin and _same_binary(stored_cmd, server_bin))
         checks.append((
             "MCP entry matches binary (Claude)",
             mcp_ok,
@@ -808,6 +833,32 @@ def _run_index_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recent(hours: int, project: str | None, n_results: int) -> int:
+    since_ts = int(time.time()) - hours * 3600
+    resolved = sentinels.resolve_project(project) if project else None
+    rows = sentinels.get_recent_conversations(
+        projects=resolved,
+        n_results=n_results,
+        include_shallow=False,
+        since_ts=since_ts,
+    )
+    label = project or "(all)"
+    print(f"Recent conversations (last {hours} h) — {label}")
+    if not rows:
+        print("  (none)")
+        return 0
+    for row in rows:
+        ts = datetime.fromtimestamp(row["mtime"]).strftime("%Y-%m-%d %H:%M")
+        topics = row["topics"]
+        exch = row["exchange_count"]
+        preview = row["preview"].replace("\n", " ").strip()
+        if len(preview) > 80:
+            preview = preview[:77] + "…"
+        proj = row["project"]
+        print(f"  {ts}  {proj:<12} [{topics}]  ({exch} exchanges)  {preview}")
+    return 0
+
+
 def _cli() -> int:
     ap = argparse.ArgumentParser(
         prog="curios",
@@ -888,6 +939,15 @@ def _cli() -> int:
 
     sub.add_parser("status", help="Quick summary: chunk counts, depth, novelty, indexing health")
     sub.add_parser("report", help="Detailed report: per-project stats, shallow and incremental lists")
+
+    rec_p = sub.add_parser(
+        "recent",
+        help="Show conversations active in the last N hours",
+        description="Lists recap-cache conversations by last activity (mtime), newest first.",
+    )
+    rec_p.add_argument("--hours", type=int, default=24, metavar="N")
+    rec_p.add_argument("--project", type=str, default=None, metavar="NAME")
+    rec_p.add_argument("--n", type=int, default=10, metavar="N", dest="n_results")
 
     sub.add_parser(
         "verify",
@@ -1001,6 +1061,9 @@ def _cli() -> int:
         return _run_index_command(args)
 
     from curios import maintain
+
+    if args.cmd == "recent":
+        return cmd_recent(args.hours, args.project, args.n_results)
 
     if args.cmd == "status":
         return maintain.cmd_status()

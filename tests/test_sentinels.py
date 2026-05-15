@@ -58,6 +58,84 @@ def test_sentinels_conversation_recap_order():
     assert [r["conversation_id"] for r in rows] == ["b", "a"]
 
 
+def test_get_recent_conversations_since_ts_filters():
+    now = int(time.time())
+    sentinels.upsert_conversation(
+        conversation_id="old",
+        project="P",
+        mtime=now - 100_000,
+        exchange_count=2,
+        depth="standard",
+        topics="decisions",
+        preview="old conv",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="new",
+        project="P",
+        mtime=now - 100,
+        exchange_count=2,
+        depth="standard",
+        topics="ideas",
+        preview="new conv",
+    )
+    rows = sentinels.get_recent_conversations(
+        projects=["P"],
+        n_results=10,
+        include_shallow=False,
+        since_ts=now - 3600,
+    )
+    assert [r["conversation_id"] for r in rows] == ["new"]
+
+
+def test_get_recent_conversations_since_ts_empty_window():
+    now = int(time.time())
+    sentinels.upsert_conversation(
+        conversation_id="stale",
+        project="P",
+        mtime=now - 10_000,
+        exchange_count=2,
+        depth="standard",
+        topics="general",
+        preview="x",
+    )
+    rows = sentinels.get_recent_conversations(
+        projects=["P"],
+        n_results=10,
+        include_shallow=False,
+        since_ts=now - 60,
+    )
+    assert rows == []
+
+
+def test_get_recent_conversations_since_ts_none_unchanged():
+    sentinels.upsert_conversation(
+        conversation_id="a",
+        project="P",
+        mtime=100,
+        exchange_count=2,
+        depth="standard",
+        topics="decisions",
+        preview="older",
+    )
+    sentinels.upsert_conversation(
+        conversation_id="b",
+        project="P",
+        mtime=200,
+        exchange_count=3,
+        depth="standard",
+        topics="ideas",
+        preview="newer",
+    )
+    with_filter = sentinels.get_recent_conversations(
+        projects=["P"], n_results=10, include_shallow=False, since_ts=None
+    )
+    without_kw = sentinels.get_recent_conversations(
+        projects=["P"], n_results=10, include_shallow=False
+    )
+    assert with_filter == without_kw
+    assert [r["conversation_id"] for r in with_filter] == ["b", "a"]
+
+
 def test_sentinels_exclude_shallow():
     sentinels.upsert_conversation(
         conversation_id="s",

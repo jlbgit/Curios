@@ -354,15 +354,25 @@ def curios_recap(
         int,
         Field(ge=1, le=50, description=f"Max recent conversations to return (default {RECAP_DEFAULT_N_RESULTS})"),
     ] = RECAP_DEFAULT_N_RESULTS,
+    since_hours: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=8760,
+            description="Only return conversations active in the last N hours (e.g. 24 for yesterday onwards). Omit for all time.",
+        ),
+    ] = None,
 ) -> str:
     """Session recap: most recent conversations for a project, time-ordered. Call at session start to see where you left off."""
     _catch_up_index()
     _require_n_results(n_results)
     resolved = _resolve_project(project)
+    since_ts = int(time.time()) - since_hours * 3600 if since_hours is not None else None
     rows = sentinels.get_recent_conversations(
         projects=resolved,
         n_results=n_results,
         include_shallow=False,
+        since_ts=since_ts,
     )
 
     out: list[dict[str, Any]] = []
@@ -381,6 +391,7 @@ def curios_recap(
     body = json.dumps(
         {
             "recap_project": project or "(all)",
+            "since_hours": since_hours,
             "recent_conversations": out,
         },
         indent=2,

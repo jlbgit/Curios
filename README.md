@@ -311,12 +311,26 @@ Curios exposes three MCP tools. Earlier pre-release versions had five (`curios_s
 
 | Tool             | Purpose                                                                                                        | When to use                                                            |
 | ---------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `curios_recap`   | Most recent conversations for a project, time-ordered. Session-start briefing.                                 | "Where did we leave off", session start, recent project context.       |
+| `curios_recap`   | Most recent conversations for a project, time-ordered. Optional `since_hours` window. Session-start briefing. | "Where did we leave off", session start, "what's new since yesterday". |
 | `curios_search`  | Semantic search across indexed transcripts (cross-project).                                                    | User asks about prior decisions, patterns, preferences, or history.    |
 | `curios_related` | Given a `conversation_id` from a previous search result, find related content in other conversations/projects. | A search result looks relevant and you want cross-project connections. |
 
 
 The MCP server is strictly read-only. Indexing and maintenance are done via CLI only.
+
+## Recap Logic (`curios_recap`)
+
+**Parameters:**
+
+| Param         | Default | Effect                                                                 |
+| ------------- | ------- | ---------------------------------------------------------------------- |
+| `project`     | `null`  | Limit to one project. Omit for cross-project.                          |
+| `n_results`   | `5`     | Max conversations returned (newest first within the window).           |
+| `since_hours` | `null`  | Only conversations active in the last N hours (e.g. `24`). Omit for all time. |
+
+**Examples:** `curios_recap(since_hours=24)` — last day across all projects; `curios_recap(project="Curios", since_hours=72)` — last three days in one project.
+
+**CLI equivalent:** `curios recent` (default last 24 h), `curios recent --hours 72 --project Curios`.
 
 ## Search Logic (`curios_search`)
 
@@ -425,6 +439,8 @@ curios index --file PATH --project-name MyApp   # Force logical project when pat
 ```bash
 curios status                                    # Compact human-readable health check
 curios report                                    # Full human-readable report (see below)
+curios recent                                    # Conversations active in the last 24 h (recap cache)
+curios recent --hours 72 --project Curios      # Time-windowed recap from the terminal
 curios verify                                    # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, perms, schema file)
 curios repair                                    # Auto-fix BM25 drift, orphan recap/sentinel rows, missing schema_version.json
 curios repair --dry-run                          # Show what repair would do

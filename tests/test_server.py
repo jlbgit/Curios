@@ -64,6 +64,22 @@ def test_n_results_above_50_raises():
         curios_recap(n_results=51)
 
 
+def test_curios_recap_since_hours_passes_since_ts(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_recent(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("curios.server.sentinels.get_recent_conversations", fake_get_recent)
+    monkeypatch.setattr("curios.server.time.time", lambda: 1_000_000.0)
+
+    raw = curios_recap(since_hours=24)
+    data = unwrap_curios_result(raw)
+    assert data["since_hours"] == 24
+    assert captured["since_ts"] == 1_000_000 - 24 * 3600
+
+
 def test_n_results_search_above_50_raises():
     with pytest.raises(ValueError, match="n_results"):
         curios_search(query="x", n_results=99)

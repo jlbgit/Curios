@@ -273,6 +273,7 @@ def get_recent_conversations(
     projects: list[str] | None,
     n_results: int,
     include_shallow: bool,
+    since_ts: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return recent conversations for recap, newest first.
 
@@ -291,6 +292,9 @@ def get_recent_conversations(
             params.extend(projects)
     if not include_shallow:
         clauses.append("depth != 'shallow'")
+    if since_ts is not None:
+        clauses.append("mtime >= ?")
+        params.append(since_ts)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
         SELECT conversation_id, project, mtime, exchange_count, topics, preview
