@@ -1,6 +1,6 @@
 # Curios
 
-**v0.6.2**
+**v0.6.3**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -449,6 +449,9 @@ curios status                                    # Compact human-readable health
 curios report                                    # Full human-readable report (see below)
 curios recent                                    # Conversations active in the last 24 h (recap cache)
 curios recent --hours 72 --project Curios      # Time-windowed recap from the terminal
+curios search "concurrency locking"              # BM25 keyword search — no AI, instant (see Search Logic)
+curios search "RAG improvements" --since 720     # Limit to conversations active in the last 720 h
+curios search "auth decisions" --project MyApp --n 10  # Scoped + more results
 curios verify                                    # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, perms, schema file)
 curios repair                                    # Auto-fix BM25 drift, orphan recap/sentinel rows, missing schema_version.json
 curios repair --dry-run                          # Show what repair would do
