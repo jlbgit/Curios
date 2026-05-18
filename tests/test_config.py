@@ -133,8 +133,21 @@ def test_transcript_relative_path_outside_base(monkeypatch, tmp_path):
     outside.parent.mkdir(parents=True)
     outside.touch()
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", tmp_path / "projects")
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", tmp_path / "claude_projects")
     rel = transcript_relative_path(outside)
     assert str(outside.resolve()) in rel or rel.endswith("f.jsonl")
+
+
+def test_transcript_relative_path_under_claude_base(monkeypatch, tmp_path):
+    claude_b = tmp_path / "claude_projects"
+    claude_b.mkdir()
+    tr = claude_b / "slug" / "uuid.jsonl"
+    tr.parent.mkdir(parents=True)
+    tr.touch()
+    monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", tmp_path / "cursor_projects")
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", claude_b)
+    rel = transcript_relative_path(tr)
+    assert rel.replace("\\", "/") == "slug/uuid.jsonl"
 
 
 def test_get_topic_keywords_merges_custom(monkeypatch, tmp_path):

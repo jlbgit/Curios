@@ -36,12 +36,14 @@ def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     data = tmp_path / "curios_data"
     chroma_path = data / "chromadb"
     proj_base = tmp_path / "projects"
+    claude_proj = tmp_path / "claude_projects"
 
     monkeypatch.setattr("curios.config.CURIOS_DATA", data)
     monkeypatch.setattr("curios.config.CHROMADB_PATH", chroma_path)
     monkeypatch.setattr("curios.config.BM25_DB_PATH", data / "bm25.db")
     monkeypatch.setattr("curios.config.SENTINELS_DB_PATH", data / "sentinels.db")
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", proj_base)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", claude_proj)
     monkeypatch.setattr("curios.config.LOCK_PATH", data / ".index.lock")
     monkeypatch.setattr("curios.config.SCHEMA_STATE_PATH", data / "schema_version.json")
 
@@ -60,6 +62,7 @@ def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr("curios.indexer.CHROMADB_PATH", chroma_path)
     monkeypatch.setattr("curios.indexer.SCHEMA_STATE_PATH", data / "schema_version.json")
     monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", proj_base)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", claude_proj)
 
     monkeypatch.setattr("curios.server.CHROMADB_PATH", chroma_path)
 

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.3 — 2026-05-16
+
+### MCP
+- **`curios_search` — `since_hours` parameter:** restricts semantic search to chunks from conversations active within the last N hours (e.g. `since_hours=720` for last 30 days). Applied as a native pre-filter in ChromaDB (`source_mtime >= now - N*3600`) and as a SQL WHERE clause in the BM25/FTS5 index.
+
+### BM25
+- **Schema version 2:** `source_mtime` column added to the FTS5 virtual table. Existing BM25 databases are wiped and rebuilt automatically on first run (server bootstrap via `_ensure_bm25`, or manually via `curios repair`). All insert paths (`indexer`, `maintain`, server bootstrap) now store `source_mtime`.
+
+### CLI
+- **`curios search QUERY`:** terminal BM25 keyword search — instant full-text lookup against the local FTS5 index with no AI or network required. Prints one result per conversation (date, project, topic tags, text snippet); `--n` controls result count; `--chars` controls snippet length; `--project` scopes to one project.
+- **`curios search --since HOURS`:** time-window filter for the terminal keyword search command (restricts BM25 results to conversations whose source file was modified within the last N hours).
+
+## 0.6.2 — 2026-05-15
+
+### Claude Code support
+- **`curios install claude` / `curios uninstall claude`:** installs (or removes) Curios in Claude Code — writes an MCP entry to `~/.claude.json`, deploys a `sessionEnd` hook to `~/.claude/hooks/`, and injects a Curios block (bounded by `<!-- BEGIN CURIOS -->` / `<!-- END CURIOS -->` markers) into `~/.claude/CLAUDE.md`. The block is updated idempotently on reinstall. `curios install` (no argument) now auto-detects both `~/.cursor` and `~/.claude` and configures whichever exist.
+- **Packaging:** `src/curios/claude/curios-append.md` bundled as package data; loaded via `importlib.resources` so no repo clone is required.
+
+### MCP
+- **`curios_recap` — `since_hours` parameter:** restricts recap to conversations active within the last N hours (e.g. `since_hours=24` for yesterday). Mirrors the `since_hours` filter already on `curios_search`.
+- **`curios_stats` tool:** index inventory (per-project conversation counts including shallow, `last_active`, top topics) plus `total_chunks` from Chroma — conversation totals match `curios report` (default `curios_search` / `curios_recap` still exclude shallow unless opted in).
+- **`curios install` validation:** warns when deployed `curios-server` version predates `curios_stats` (stale `uv tool install`); run `uv tool install --reinstall …` and restart the IDE so MCP picks up four tools.
+- **`curios install` binary resolution:** store the `which`-visible path instead of following symlinks, avoiding confusion when pyenv shims shadow `uv tool` binaries.
+
+### CLI
+- **`curios recent`:** terminal recap — lists conversations active in the last 24 h by default; `--hours N` changes the window; `--project` scopes to one project. Reads from the SQLite recap cache (no Chroma required).
+- **Post-install validation:** `curios install` now runs a short validation pass after writing config files — checks that `curios` and `curios-server` are on PATH, MCP and hook entries match what was written, `curios-server --version` responds, and disk headroom is adequate. Fatal failures exit 1; non-fatal issues (disk warning, stale server version) print a warning only. Re-run validation at any time without writing files: `curios install --validate`.
+- **Disk space warning:** `curios install` warns when free space under `CURIOS_DATA` is below 250 MB before and after writing.
+
+### Indexer
+- **Reentrant file lock:** the index lock (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) is now reentrant within the same thread via a `threading.local` depth counter, preventing deadlocks when recursive call paths both try to acquire the lock. Contention uses exponential backoff (50 ms → 1 s) up to `LOCK_TIMEOUT_S` before raising `TimeoutError`.
+
+### Rule
+- **`curios.mdc` proactiveness:** rule updated to instruct the agent to proactively run `curios_search` when beginning implementation on a topic that may relate to prior project work — not only at session start.
+
 ## 0.6.1 — 2026-05-14
 
 ### Cross-platform (macOS & Windows)

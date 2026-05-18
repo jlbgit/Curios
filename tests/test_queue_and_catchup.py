@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import time
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
@@ -314,6 +315,44 @@ def test_catch_up_drains_queue_and_indexes(monkeypatch, tmp_path):
 
     assert len(run_index_calls) == 1
     assert transcript in run_index_calls[0]
+
+
+def test_catch_up_holds_index_lock_during_run_index(monkeypatch, tmp_path):
+    """run_index must execute while the outer catch-up lock is held."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    import curios.indexer as indexer
+    import curios.server as server
+
+    server._last_discovery = time.time()
+
+    transcript = tmp_path / "projects" / "s" / "agent-transcripts" / "lock-test.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    queue_path = tmp_path / "curios_data" / "pending_index.txt"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(str(transcript.resolve()) + "\n", encoding="utf-8")
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+
+    lock_events: list[str] = []
+
+    @contextmanager
+    def tracking_lock():
+        lock_events.append("acquire")
+        with indexer.index_lock():
+            yield
+        lock_events.append("release")
+
+    def fake_run_index(paths, force, dry_run, project_override=None):
+        assert lock_events == ["acquire"], "run_index must run under catch-up lock"
+        return (1, 1)
+
+    monkeypatch.setattr(server, "index_lock", tracking_lock)
+    monkeypatch.setattr("curios.indexer.run_index", fake_run_index)
+
+    server._catch_up_index()
+
+    assert lock_events == ["acquire", "release"]
 
 
 def test_catch_up_full_discovery_on_first_call(monkeypatch, tmp_path):

@@ -45,6 +45,35 @@ def test_cli_help_exits_zero(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Cap
     assert "COMMAND" in out or "index" in out
 
 
+def test_cli_install_dry_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from curios import install
+
+    ch = tmp_path / ".cursor"
+    ch.mkdir()
+    monkeypatch.setattr(install, "CURSOR_HOME", ch)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr(install, "_resolve_binary", lambda name: f"/fake/bin/{name}")
+    assert _run_main(monkeypatch, ["curios", "install", "cursor", "--dry-run"]) == 0
+    assert "DRY-RUN" in capsys.readouterr().out
+    assert not (ch / "mcp.json").exists()
+
+
+def test_cli_install_missing_binary_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from curios import install
+
+    ch = tmp_path / ".cursor"
+    ch.mkdir()
+    monkeypatch.setattr(install, "CURSOR_HOME", ch)
+    monkeypatch.setattr(install, "CLAUDE_HOME", tmp_path / "no_claude")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    assert _run_main(monkeypatch, ["curios", "install", "cursor"]) == 1
+    assert "not found on PATH" in capsys.readouterr().err
+
+
 def test_cli_index_rebuild_rejects_project(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     assert (
         _run_main(monkeypatch, ["curios", "index", "--rebuild", "--project", "X"])
@@ -141,10 +170,58 @@ def test_cli_verify_runs(curios_data_env, monkeypatch: pytest.MonkeyPatch) -> No
     coll.upsert(ids=["id1"], documents=["hello"], metadatas=[meta])
     schema_path = curios_data_env / "curios_data" / "schema_version.json"
     schema_path.write_text(json.dumps({"version": SCHEMA_VERSION}), encoding="utf-8")
-    bm25.insert_many([("id1", "hello", "S")])
+    bm25.insert_many([("id1", "hello", "S", None)])
 
     x = curios_data_env / "projects" / "slug" / "agent-transcripts" / "x.jsonl"
     x.parent.mkdir(parents=True)
     x.write_text('{"role":"user","message":{"content":"hi"}}\n', encoding="utf-8")
 
     assert _run_main(monkeypatch, ["curios", "verify"]) == 0
+
+
+def test_cli_search_routes_to_cmd_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert _run_main(monkeypatch, ["curios", "search", "foo", "bar"]) == 0
+    assert calls == [("foo bar", None, 5, 320, None)]
+
+
+def test_cli_search_project_and_n_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert (
+        _run_main(
+            monkeypatch,
+            ["curios", "search", "foo", "--project", "X", "--n", "3"],
+        )
+        == 0
+    )
+    assert calls == [("foo", "X", 3, 320, None)]
+
+
+def test_cli_search_chars_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from curios import maintain
+
+    calls: list[tuple[str, str | None, int, int, int | None]] = []
+
+    def fake(q: str, p: str | None, n: int, snippet_chars: int, since_hours: int | None = None) -> int:
+        calls.append((q, p, n, snippet_chars, since_hours))
+        return 0
+
+    monkeypatch.setattr(maintain, "cmd_search", fake)
+    assert _run_main(monkeypatch, ["curios", "search", "q", "--chars", "900"]) == 0
+    assert calls == [("q", None, 5, 900, None)]

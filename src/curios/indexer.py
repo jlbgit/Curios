@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import re
 import json
 import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +26,7 @@ from curios.config import (
     CURIOS_DATA,
     INDEX_LOG_PATH,
     LOCK_PATH,
+    LOCK_TIMEOUT_S,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
     NOVELTY_N_RESULTS,
@@ -35,6 +38,7 @@ from curios.config import (
     TOPIC_MIN_HITS,
     TOPIC_MIN_HITS_DEFAULT,
     TOPIC_ROLE_WEIGHTS,
+    CLAUDE_TRANSCRIPTS_BASE,
     TRANSCRIPTS_BASE,
     _DEFAULT_ROLE_WEIGHTS,
     ensure_data_dir,
@@ -58,8 +62,21 @@ _LOGGED_PROJECT_SLUGS: set[str] = set()
 NOVELTY_DISTANCE_MAX = 1.0 - NOVELTY_THRESHOLD
 
 
+_lock_local = threading.local()
+
+
 @contextmanager
 def index_lock() -> Iterator[None]:
+    """Reentrant file-based lock. Safe to nest within the same thread."""
+    depth = getattr(_lock_local, "depth", 0)
+    if depth > 0:
+        _lock_local.depth = depth + 1
+        try:
+            yield
+        finally:
+            _lock_local.depth -= 1
+        return
+
     ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
@@ -69,9 +86,26 @@ def index_lock() -> Iterator[None]:
         fp.flush()
         fp.seek(0)
         try:
-            msvcrt.locking(fp.fileno(), msvcrt.LK_LOCK, 1)
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            delay = 0.05
+            while True:
+                try:
+                    msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as e:
+                    if e.errno != errno.EACCES:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"curios index lock held for >{LOCK_TIMEOUT_S}s"
+                        ) from e
+                    time.sleep(min(delay, remaining))
+                    delay = min(delay * 2, 1.0)
+            _lock_local.depth = 1
             yield
         finally:
+            _lock_local.depth = 0
             try:
                 fp.seek(0)
                 msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
@@ -83,9 +117,26 @@ def index_lock() -> Iterator[None]:
 
         fp = open(LOCK_PATH, "a+", encoding="utf-8")
         try:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            delay = 0.05
+            while True:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"curios index lock held for >{LOCK_TIMEOUT_S}s"
+                        ) from e
+                    time.sleep(min(delay, remaining))
+                    delay = min(delay * 2, 1.0)
+            _lock_local.depth = 1
             yield
         finally:
+            _lock_local.depth = 0
             try:
                 fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
             except OSError:
@@ -146,7 +197,7 @@ def _line_text(record: dict[str, Any]) -> str:
                     parts.append(t)
         return "\n".join(parts).strip()
     if content is not None:
-        log.warning("unexpected content type %s — Cursor format may have changed", type(content).__name__)
+        log.warning("unexpected content type %s — transcript format may have changed", type(content).__name__)
     return ""
 
 
@@ -176,7 +227,7 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
             except json.JSONDecodeError:
                 log.debug("invalid JSON at %s line %d, skipping", path.name, lineno)
                 continue
-            role = obj.get("role")
+            role = obj.get("role") or obj.get("type")
             text = _line_text(obj)
             if not text:
                 if role in ("user", "assistant"):
@@ -191,7 +242,7 @@ def _parse_transcript(path: Path) -> tuple[list[dict[str, str]], int]:
     flush()
 
     if line_count > 0 and not exchanges:
-        log.warning("no exchanges parsed from %s (%d lines) — Cursor format may have changed", path.name, line_count)
+        log.warning("no exchanges parsed from %s (%d lines) — transcript format may have changed", path.name, line_count)
 
     return exchanges, user_messages
 
@@ -462,13 +513,13 @@ def _index_file(
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict[str, Any]] = []
-    bm25_rows: list[tuple[str, str, str]] = []
+    bm25_rows: list[tuple[str, str, str, int | None]] = []
     for (cid, text, partial), nov in zip(pending, novelties):
         meta = {**partial, "novelty": nov}
         ids.append(cid)
         docs.append(text)
         metas.append(meta)
-        bm25_rows.append((cid, text, project))
+        bm25_rows.append((cid, text, project, int(partial.get("source_mtime") or 0)))
 
     coll.upsert(ids=ids, documents=docs, metadatas=metas)
     bm25.insert_many(bm25_rows)
@@ -479,28 +530,44 @@ def _index_file(
 
 
 def discover_transcripts(project_filter: str | None = None) -> list[Path]:
-    base = TRANSCRIPTS_BASE
-    if not base.is_dir():
-        return []
+    sources: tuple[tuple[Path, tuple[str, ...]], ...] = (
+        (TRANSCRIPTS_BASE, ("*/agent-transcripts/*/*.jsonl", "*/agent-transcripts/*.jsonl")),
+        (CLAUDE_TRANSCRIPTS_BASE, ("*/*.jsonl", "*/*/subagents/*.jsonl")),
+    )
     by_key: dict[str, Path] = {}
-    for pattern in ("*/agent-transcripts/*/*.jsonl", "*/agent-transcripts/*.jsonl"):
-        for p in base.glob(pattern):
-            by_key[str(p.resolve())] = p
-    if not by_key:
-        try:
-            if any(base.iterdir()):
-                log.warning(
-                    "TRANSCRIPTS_BASE (%s) is non-empty but no transcripts matched known glob patterns. "
-                    "Cursor may have changed its transcript layout.",
-                    base,
-                )
-        except OSError:
-            pass
+    for base, patterns in sources:
+        if not base.is_dir():
+            continue
+        matched = False
+        for pattern in patterns:
+            for p in base.glob(pattern):
+                matched = True
+                by_key[str(p.resolve())] = p
+        if not matched:
+            try:
+                if any(base.iterdir()):
+                    log.warning(
+                        "%s is non-empty but no transcripts matched known glob patterns "
+                        "for this source (the IDE may have changed its transcript layout).",
+                        base,
+                    )
+            except OSError:
+                pass
     out: list[Path] = []
     for p in sorted(by_key.values(), key=lambda x: str(x)):
         if project_filter:
             proj = extract_project_name(p)
-            slug = p.relative_to(base).parts[0]
+            base_for_file: Path | None = None
+            for b, _ in sources:
+                try:
+                    p.relative_to(b)
+                    base_for_file = b
+                    break
+                except ValueError:
+                    continue
+            if base_for_file is None:
+                continue
+            slug = p.relative_to(base_for_file).parts[0]
             needle = project_filter.lower()
             if needle not in proj.lower() and needle not in slug.lower():
                 continue
@@ -616,7 +683,7 @@ def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:
 
 
 def _session_hook() -> None:
-    """Called by Cursor's sessionEnd hook.
+    """Called by Cursor's sessionEnd hook or Claude Code's SessionEnd hook.
 
     Reads JSON from stdin and queues the transcript path for the MCP
     server's catch-up indexer. Does NOT access ChromaDB directly —
@@ -644,5 +711,9 @@ def _session_hook() -> None:
         _log_to_index_file(f"missing file {path}")
         return
 
-    queue_for_indexing(path)
+    try:
+        queue_for_indexing(path)
+    except OSError as e:
+        _log_to_index_file(f"FAILED to queue {path}: {e}")
+        return
     _log_to_index_file(f"queued {path}")

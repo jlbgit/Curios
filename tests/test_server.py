@@ -21,6 +21,7 @@ from curios.server import (
     curios_recap,
     curios_related,
     curios_search,
+    curios_stats,
 )
 from tests.conftest import topic_meta_false, unwrap_curios_result
 
@@ -62,6 +63,32 @@ def test_unknown_topic_logs_warning(caplog):
 def test_n_results_above_50_raises():
     with pytest.raises(ValueError, match="n_results"):
         curios_recap(n_results=51)
+
+
+def test_curios_recap_since_hours_passes_since_ts(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_recent(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("curios.server.sentinels.get_recent_conversations", fake_get_recent)
+    monkeypatch.setattr("curios.server.time.time", lambda: 1_000_000.0)
+
+    raw = curios_recap(since_hours=24)
+    data = unwrap_curios_result(raw)
+    assert data["since_hours"] == 24
+    assert captured["since_ts"] == 1_000_000 - 24 * 3600
+
+
+def test_curios_recap_since_hours_none_outputs_null_key(monkeypatch):
+    monkeypatch.setattr(
+        "curios.server.sentinels.get_recent_conversations", lambda **_: []
+    )
+    raw = curios_recap()
+    data = unwrap_curios_result(raw)
+    assert "since_hours" in data
+    assert data["since_hours"] is None
 
 
 def test_n_results_search_above_50_raises():
@@ -106,6 +133,57 @@ def test_curios_search_results_use_score_key():
     r = data["results"][0]
     assert "score" in r
     assert "distance" not in r
+
+
+def test_curios_stats_returns_inventory(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_index_stats(projects):
+        captured["projects"] = projects
+        return {
+            "total_conversations": 3,
+            "projects": [
+                {"project": "A", "conversations": 2, "last_active": 100, "top_topics": ["decisions"]},
+                {"project": "B", "conversations": 1, "last_active": 50, "top_topics": ["architecture"]},
+            ],
+        }
+
+    monkeypatch.setattr("curios.server.sentinels.get_index_stats", fake_get_index_stats)
+    fake = MagicMock()
+    fake.count.return_value = 1234
+
+    with patch("curios.server._collection", return_value=fake):
+        with patch("curios.server._retry_chroma", lambda fn: fn()):
+            raw = curios_stats()
+    data = unwrap_curios_result(raw)
+    assert captured["projects"] is None
+    assert data["total_conversations"] == 3
+    assert data["total_chunks"] == 1234
+    assert len(data["projects"]) == 2
+    assert {p["project"] for p in data["projects"]} == {"A", "B"}
+
+
+def test_curios_stats_project_filter(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_index_stats(projects):
+        captured["projects"] = projects
+        return {"total_conversations": 1, "projects": [{"project": "Z", "conversations": 1, "last_active": 1, "top_topics": []}]}
+
+    monkeypatch.setattr("curios.server.sentinels.get_index_stats", fake_get_index_stats)
+    monkeypatch.setattr("curios.server._resolve_project", lambda p: ["Z"] if p == "z" else None)
+
+    fake = MagicMock()
+    # project filter uses get(where=..., include=[]) → count IDs
+    fake.get.return_value = {"ids": ["id1", "id2", "id3"]}
+
+    with patch("curios.server._collection", return_value=fake):
+        with patch("curios.server._retry_chroma", lambda fn: fn()):
+            raw = curios_stats(project="z")
+    data = unwrap_curios_result(raw)
+    assert captured["projects"] == ["Z"]
+    assert data["projects"][0]["project"] == "Z"
+    assert data["total_chunks"] == 3
 
 
 def test_curios_related_uses_score_key():
@@ -196,11 +274,80 @@ def test_ensure_bm25_acquires_index_lock(monkeypatch):
     )
 
     class _Coll:
-        pass
+        def count(self) -> int:
+            return 1
 
     try:
         server._ensure_bm25(_Coll())
         assert entered == [True]
+    finally:
+        server._bm25_bootstrapped = False
+
+
+def test_ensure_bm25_rebuilds_when_partially_populated(monkeypatch):
+    import curios.server as server
+
+    monkeypatch.setattr(server, "_bm25_bootstrapped", False)
+    monkeypatch.setattr(server.bm25, "count", lambda: 2)
+    wiped: list[bool] = []
+    inserted: list[int] = []
+
+    monkeypatch.setattr(server.bm25, "wipe", lambda: wiped.append(True))
+    monkeypatch.setattr(
+        server.bm25,
+        "insert_many",
+        lambda rows: inserted.append(len(rows)),
+    )
+
+    @contextmanager
+    def fake_lock():
+        yield
+
+    monkeypatch.setattr(server, "index_lock", fake_lock)
+    monkeypatch.setattr(
+        server,
+        "_iter_collection",
+        lambda coll: iter(
+            [
+                ("a", "doc a", {"project": "P", "source_mtime": 1}),
+                ("b", "doc b", {"project": "P", "source_mtime": 2}),
+            ]
+        ),
+    )
+
+    class _Coll:
+        def count(self) -> int:
+            return 10
+
+    try:
+        server._ensure_bm25(_Coll())
+        assert wiped == [True]
+        assert inserted == [2]
+    finally:
+        server._bm25_bootstrapped = False
+
+
+def test_ensure_bm25_skips_when_in_sync(monkeypatch):
+    import curios.server as server
+
+    monkeypatch.setattr(server, "_bm25_bootstrapped", False)
+    monkeypatch.setattr(server.bm25, "count", lambda: 3)
+    entered: list[bool] = []
+
+    @contextmanager
+    def fake_lock():
+        entered.append(True)
+        yield
+
+    monkeypatch.setattr(server, "index_lock", fake_lock)
+
+    class _Coll:
+        def count(self) -> int:
+            return 3
+
+    try:
+        server._ensure_bm25(_Coll())
+        assert entered == []
     finally:
         server._bm25_bootstrapped = False
 

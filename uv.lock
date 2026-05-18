@@ -575,13 +575,12 @@ wheels = [
 
 [[package]]
 name = "curios"
-version = "0.6.1"
+version = "0.6.3"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
     { name = "mcp" },
     { name = "pydantic" },
-    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -598,7 +597,6 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.0" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

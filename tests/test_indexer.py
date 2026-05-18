@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import subprocess
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -12,6 +16,7 @@ import pytest
 from curios import bm25, sentinels
 from curios.config import SCHEMA_VERSION
 from curios.indexer import (
+    index_lock,
     _chunk_exchange,
     _hard_split_oversized,
     _line_text,
@@ -31,6 +36,60 @@ def test_conversation_topics_label_removed():
     import curios.indexer as idx
 
     assert not hasattr(idx, "_conversation_topics_label")
+
+
+def test_index_lock_reentrant_nested(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Nested index_lock() in one thread must not deadlock (catch-up + run_index)."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    with index_lock():
+        with index_lock():
+            pass
+
+
+def test_index_lock_excludes_concurrent_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """flock serializes writers across processes (MCP vs CLI)."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    data = tmp_path / "curios_data"
+    src = Path(__file__).resolve().parents[1] / "src"
+    ready = data / ".lock_holder_ready"
+    child = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import curios.config as cfg
+import curios.indexer as idx
+from curios.indexer import index_lock
+data = Path(sys.argv[2])
+ready = Path(sys.argv[3])
+cfg.CURIOS_DATA = data
+cfg.LOCK_PATH = data / ".index.lock"
+cfg.CHROMADB_PATH = data / "chromadb"
+idx.CURIOS_DATA = data
+idx.LOCK_PATH = cfg.LOCK_PATH
+idx.CHROMADB_PATH = cfg.CHROMADB_PATH
+data.mkdir(parents=True, exist_ok=True)
+with index_lock():
+    ready.write_text("1", encoding="utf-8")
+    time.sleep(2)
+"""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", child, str(src), str(data), str(ready)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.is_file(), "child did not acquire index lock in time"
+        start = time.monotonic()
+        with index_lock():
+            waited = time.monotonic() - start
+    finally:
+        holder.wait(timeout=10)
+    assert waited >= 1.0
 
 
 def test_continuation_chunks_include_user_asked_preamble(monkeypatch):
@@ -53,9 +112,12 @@ def test_discover_transcripts_warns_on_empty_glob(caplog, tmp_path, monkeypatch)
     mock_base = tmp_path / "cursor_projects"
     mock_base.mkdir()
     (mock_base / "some-slug").mkdir()
+    no_claude = tmp_path / "no_claude_projects"
     caplog.set_level(logging.WARNING)
     monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", mock_base, raising=False)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", no_claude, raising=False)
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", mock_base)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     out = discover_transcripts()
     assert out == []
     assert "no transcripts matched" in caplog.text
@@ -63,12 +125,15 @@ def test_discover_transcripts_warns_on_empty_glob(caplog, tmp_path, monkeypatch)
 
 def test_discover_transcripts_finds_jsonl(tmp_path, monkeypatch):
     base = tmp_path / "projects"
+    no_claude = tmp_path / "no_claude"
     agent = base / "my-app-slug" / "agent-transcripts"
     agent.mkdir(parents=True)
     f = agent / "a.jsonl"
     f.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", base)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", base)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", no_claude)
     paths = discover_transcripts("my-app")
     assert len(paths) == 1
     assert paths[0] == f
@@ -96,6 +161,50 @@ def test_line_text_unexpected_type_logs(caplog):
     rec = {"message": {"content": 12345}}
     assert _line_text(rec) == ""
     assert "unexpected content type" in caplog.text
+
+
+def test_parse_transcript_claude_top_level_type(tmp_path):
+    p = tmp_path / "claude.jsonl"
+    p.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]},
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    exchanges, user_count = _parse_transcript(p)
+    assert user_count == 1
+    assert len(exchanges) == 1
+    assert exchanges[0]["user"] == "Hi"
+    assert exchanges[0]["assistant"] == "Hello"
+
+
+def test_discover_transcripts_finds_claude_jsonl(tmp_path, monkeypatch):
+    cb = tmp_path / "claude_projects"
+    slug = cb / "my-app-slug"
+    f = slug / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("{}", encoding="utf-8")
+    cursor_b = tmp_path / "cursor_projects"
+    monkeypatch.setattr("curios.indexer.TRANSCRIPTS_BASE", cursor_b)
+    monkeypatch.setattr("curios.indexer.CLAUDE_TRANSCRIPTS_BASE", cb)
+    monkeypatch.setattr("curios.config.TRANSCRIPTS_BASE", cursor_b)
+    monkeypatch.setattr("curios.config.CLAUDE_TRANSCRIPTS_BASE", cb)
+    paths = discover_transcripts("my-app")
+    assert len(paths) == 1
+    assert paths[0] == f
 
 
 def test_parse_transcript_multi_exchange(tmp_path):
@@ -263,3 +372,26 @@ def test_index_file_skips_when_sentinel_matches(monkeypatch, tmp_path):
     coll = _get_collections(client)
     n = _index_file(tr, coll, force=False, dry_run=False, project_override=None)
     assert n == 0
+
+
+def test_session_hook_logs_when_queue_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import curios.indexer as idx
+
+    t = tmp_path / "conv.jsonl"
+    t.write_text("{}\n", encoding="utf-8")
+    lines: list[str] = []
+
+    def capture(msg: str) -> None:
+        lines.append(msg)
+
+    def boom(_path: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(idx, "_log_to_index_file", capture)
+    monkeypatch.setattr(idx, "queue_for_indexing", boom)
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"transcript_path": str(t)})),
+    )
+    idx._session_hook()
+    assert any("FAILED to queue" in x for x in lines)

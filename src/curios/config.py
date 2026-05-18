@@ -25,11 +25,13 @@ def _env_float(name: str, default: float) -> float:
 
 
 # ── Paths & directories ─────────────────────────────────────
-# Override via env: CURIOS_CURSOR_HOME, CURIOS_DATA.
+# Override via env: CURIOS_CURSOR_HOME, CURIOS_CLAUDE_HOME, CURIOS_CLAUDE_JSON, CURIOS_DATA.
 # Default Cursor home: ~/.cursor on all platforms.
+# Default Claude Code home: ~/.claude (transcripts under projects/).
 # Default data: Linux/BSD XDG-style; macOS ~/Library/Application Support/curios;
 # Windows %LOCALAPPDATA%\\curios.
 CURSOR_HOME = Path(os.environ.get("CURIOS_CURSOR_HOME", Path.home() / ".cursor"))
+CLAUDE_HOME = Path(os.environ.get("CURIOS_CLAUDE_HOME", Path.home() / ".claude"))
 
 
 def _default_curios_data_dir() -> Path:
@@ -71,11 +73,17 @@ def ensure_data_dir() -> None:
     """Create CURIOS_DATA with restricted permissions (idempotent)."""
     CURIOS_DATA.mkdir(parents=True, exist_ok=True)
     set_owner_only_permissions(CURIOS_DATA)
-TRANSCRIPTS_BASE = CURSOR_HOME / "projects"       # where Cursor writes agent transcripts
+
+
+TRANSCRIPTS_BASE = CURSOR_HOME / "projects"         # where Cursor writes agent transcripts
+CLAUDE_TRANSCRIPTS_BASE = CLAUDE_HOME / "projects"  # where Claude Code writes JSONL transcripts
+CLAUDE_JSON_PATH = Path(os.environ.get("CURIOS_CLAUDE_JSON", Path.home() / ".claude.json"))  # user MCP config
+CLAUDE_SETTINGS_PATH = CLAUDE_HOME / "settings.json"  # user-level hook config
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference notes (future)
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
 PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json" # slug→friendly-name mapping
 LOCK_PATH = CURIOS_DATA / ".index.lock"           # flock file for concurrent indexer safety
+LOCK_TIMEOUT_S: int = int(os.environ.get("CURIOS_LOCK_TIMEOUT_S", "5"))
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"  # tracks DB schema migrations
 INDEX_LOG_PATH = CURIOS_DATA / "index.log"        # stdout/stderr from background indexer
 LAST_INDEXED_PATH = CURIOS_DATA / "last_indexed.json"    # timestamp of last successful run
@@ -337,7 +345,8 @@ CLI_MAX_LIST_ITEMS = 20
 # Timeout in seconds for the sessionEnd hook command in hooks.json.
 # If the indexer doesn't finish in this window, Cursor kills the process.
 # Sensible range: 5–30. Default 10.
-SESSION_HOOK_TIMEOUT = 10
+# Override: CURIOS_SESSION_HOOK_TIMEOUT.
+SESSION_HOOK_TIMEOUT = _env_int("CURIOS_SESSION_HOOK_TIMEOUT", 10)
 
 HOME = Path.home()
 
@@ -933,10 +942,13 @@ def extract_project_name(transcript_path: Path) -> str:
 
 
 def transcript_relative_path(transcript_path: Path) -> str:
-    try:
-        return str(transcript_path.resolve().relative_to(TRANSCRIPTS_BASE.resolve()))
-    except ValueError:
-        return str(transcript_path.resolve())
+    resolved = transcript_path.resolve()
+    for base in (TRANSCRIPTS_BASE, CLAUDE_TRANSCRIPTS_BASE):
+        try:
+            return str(resolved.relative_to(base.resolve()))
+        except ValueError:
+            continue
+    return str(resolved)
 
 
 def conversation_id_from_path(transcript_path: Path) -> str:
