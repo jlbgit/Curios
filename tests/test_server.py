@@ -274,11 +274,80 @@ def test_ensure_bm25_acquires_index_lock(monkeypatch):
     )
 
     class _Coll:
-        pass
+        def count(self) -> int:
+            return 1
 
     try:
         server._ensure_bm25(_Coll())
         assert entered == [True]
+    finally:
+        server._bm25_bootstrapped = False
+
+
+def test_ensure_bm25_rebuilds_when_partially_populated(monkeypatch):
+    import curios.server as server
+
+    monkeypatch.setattr(server, "_bm25_bootstrapped", False)
+    monkeypatch.setattr(server.bm25, "count", lambda: 2)
+    wiped: list[bool] = []
+    inserted: list[int] = []
+
+    monkeypatch.setattr(server.bm25, "wipe", lambda: wiped.append(True))
+    monkeypatch.setattr(
+        server.bm25,
+        "insert_many",
+        lambda rows: inserted.append(len(rows)),
+    )
+
+    @contextmanager
+    def fake_lock():
+        yield
+
+    monkeypatch.setattr(server, "index_lock", fake_lock)
+    monkeypatch.setattr(
+        server,
+        "_iter_collection",
+        lambda coll: iter(
+            [
+                ("a", "doc a", {"project": "P", "source_mtime": 1}),
+                ("b", "doc b", {"project": "P", "source_mtime": 2}),
+            ]
+        ),
+    )
+
+    class _Coll:
+        def count(self) -> int:
+            return 10
+
+    try:
+        server._ensure_bm25(_Coll())
+        assert wiped == [True]
+        assert inserted == [2]
+    finally:
+        server._bm25_bootstrapped = False
+
+
+def test_ensure_bm25_skips_when_in_sync(monkeypatch):
+    import curios.server as server
+
+    monkeypatch.setattr(server, "_bm25_bootstrapped", False)
+    monkeypatch.setattr(server.bm25, "count", lambda: 3)
+    entered: list[bool] = []
+
+    @contextmanager
+    def fake_lock():
+        entered.append(True)
+        yield
+
+    monkeypatch.setattr(server, "index_lock", fake_lock)
+
+    class _Coll:
+        def count(self) -> int:
+            return 3
+
+    try:
+        server._ensure_bm25(_Coll())
+        assert entered == []
     finally:
         server._bm25_bootstrapped = False
 
