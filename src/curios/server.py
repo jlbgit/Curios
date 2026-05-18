@@ -248,27 +248,44 @@ def _meta_matches_search_filters(
     return True
 
 
+def _bm25_in_sync(coll) -> bool:
+    """True when BM25 row count matches Chroma (skip rebuild)."""
+    try:
+        chroma_n = coll.count()
+    except Exception:
+        return False
+    if chroma_n < 0:
+        return False
+    return bm25.count() == chroma_n
+
+
+def _rebuild_bm25_from_chroma(coll) -> None:
+    batch: list[tuple[str, str, str, int | None]] = []
+    for cid, doc, meta in _iter_collection(coll):
+        if not meta:
+            continue
+        proj = str(meta.get("project") or "unknown")
+        batch.append((cid, doc or "", proj, int(meta.get("source_mtime") or 0)))
+        if len(batch) >= CHROMA_ITER_BATCH:
+            bm25.insert_many(batch)
+            batch.clear()
+    if batch:
+        bm25.insert_many(batch)
+
+
 def _ensure_bm25(coll) -> None:
     global _bm25_bootstrapped
     if _bm25_bootstrapped:
         return
     _bm25_bootstrapped = True
-    if bm25.count() > 0:
+    if _bm25_in_sync(coll):
         return
     with index_lock():
-        if bm25.count() > 0:
+        if _bm25_in_sync(coll):
             return
-        batch: list[tuple[str, str, str, int | None]] = []
-        for cid, doc, meta in _iter_collection(coll):
-            if not meta:
-                continue
-            proj = str(meta.get("project") or "unknown")
-            batch.append((cid, doc or "", proj, int(meta.get("source_mtime") or 0)))
-            if len(batch) >= CHROMA_ITER_BATCH:
-                bm25.insert_many(batch)
-                batch.clear()
-        if batch:
-            bm25.insert_many(batch)
+        if bm25.count() > 0:
+            bm25.wipe()
+        _rebuild_bm25_from_chroma(coll)
 
 
 def _catch_up_index() -> None:
