@@ -82,6 +82,7 @@ CLAUDE_SETTINGS_PATH = CLAUDE_HOME / "settings.json"  # user-level hook config
 PREFERENCES_PATH = CURIOS_DATA / "preferences.md" # user-authored preference notes (future)
 CUSTOM_KEYWORDS_PATH = CURIOS_DATA / "custom_keywords.json"     # user topic keyword extensions
 PROJECT_OVERRIDES_PATH = CURIOS_DATA / "project_overrides.json" # slug→friendly-name mapping
+PROJECT_QUERY_ALIASES_PATH = CURIOS_DATA / "project_query_aliases.json"  # query→stored name
 LOCK_PATH = CURIOS_DATA / ".index.lock"           # flock file for concurrent indexer safety
 LOCK_TIMEOUT_S: int = int(os.environ.get("CURIOS_LOCK_TIMEOUT_S", "5"))
 SCHEMA_STATE_PATH = CURIOS_DATA / "schema_version.json"  # tracks DB schema migrations
@@ -811,6 +812,96 @@ def get_project_overrides() -> dict[str, str]:
     except (json.JSONDecodeError, OSError):
         pass
     return {}
+
+
+_SLUG_SEGMENT_SKIP = frozenset(
+    {
+        "home",
+        "users",
+        "documents",
+        "documentos",
+        "applications",
+        "apps",
+        "projects",
+        "workspace",
+        "code",
+        "src",
+        "git",
+        "gitlab",
+        "github",
+        "dev",
+        "vicomtech",
+        "jbruse",
+    }
+)
+
+
+def _segment_name_variants(segment: str) -> set[str]:
+    """Hyphen/underscore variants and common gova→gov spelling for query aliases."""
+    raw = segment.strip()
+    if not raw:
+        return set()
+    dashed = raw.replace("_", "-")
+    underscored = raw.replace("-", "_")
+    variants = {
+        raw,
+        raw.lower(),
+        raw.upper(),
+        dashed,
+        dashed.lower(),
+        underscored,
+        underscored.lower(),
+    }
+    if dashed.lower().endswith("gova"):
+        stem = dashed[:-1]
+        variants.update(
+            {
+                stem,
+                stem.lower(),
+                stem.replace("-", "_"),
+                stem.replace("-", "_").lower(),
+            }
+        )
+    return {v for v in variants if v}
+
+
+def get_project_query_aliases(stored_projects: list[str]) -> dict[str, str]:
+    """Map normalized query strings to stored project names.
+
+    Merges optional ``project_query_aliases.json`` with aliases derived from
+    ``project_overrides.json`` slug path segments (e.g. dataviz-gova → Lakua).
+    """
+    stored = set(stored_projects)
+    aliases: dict[str, str] = {}
+
+    if PROJECT_QUERY_ALIASES_PATH.exists():
+        try:
+            data = json.loads(PROJECT_QUERY_ALIASES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    target = str(value)
+                    if target in stored:
+                        aliases[str(key).strip().lower()] = target
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for slug, target in get_project_overrides().items():
+        if target not in stored:
+            continue
+        segments = [
+            s
+            for s in slug.split("-")
+            if s.lower() not in _SLUG_SEGMENT_SKIP and len(s) >= 3 and not s.isdigit()
+        ]
+        for seg in segments:
+            for variant in _segment_name_variants(seg):
+                aliases[variant.lower()] = target
+        if len(segments) >= 2:
+            pair = f"{segments[-2]}-{segments[-1]}"
+            for variant in _segment_name_variants(pair):
+                aliases[variant.lower()] = target
+
+    return aliases
 
 
 CURIOS_IMPORT_SLUG_PREFIX = "curios-import-"
