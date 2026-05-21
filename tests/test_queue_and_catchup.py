@@ -305,7 +305,7 @@ def test_catch_up_drains_queue_and_indexes(monkeypatch, tmp_path):
 
     run_index_calls = []
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         run_index_calls.append(paths)
         return (1, 5)
 
@@ -343,7 +343,7 @@ def test_catch_up_holds_index_lock_during_run_index(monkeypatch, tmp_path):
             yield
         lock_events.append("release")
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         assert lock_events == ["acquire"], "run_index must run under catch-up lock"
         return (1, 1)
 
@@ -374,7 +374,7 @@ def test_catch_up_full_discovery_on_first_call(monkeypatch, tmp_path):
 
     run_index_calls = []
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         run_index_calls.append(list(paths))
         return (len(paths), 10)
 
@@ -406,7 +406,7 @@ def test_catch_up_skips_already_indexed(monkeypatch, tmp_path):
 
     run_index_calls = []
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         run_index_calls.append(paths)
         return (len(paths), 0)
 
@@ -489,7 +489,7 @@ def test_catch_up_deduplicates_discovery_and_queue(monkeypatch, tmp_path):
 
     run_index_calls = []
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         run_index_calls.append(list(paths))
         return (1, 5)
 
@@ -590,7 +590,7 @@ def test_catch_up_detects_stale_and_force_reindexes(monkeypatch, tmp_path):
 
     run_index_calls = []
 
-    def fake_run_index(paths, force, dry_run, project_override=None):
+    def fake_run_index(paths, force, dry_run, project_override=None, **kwargs):
         run_index_calls.append({"paths": list(paths), "force": force})
         return (len(paths), 5)
 

@@ -462,6 +462,28 @@ def test_find_stale_respects_max_age(tmp_path):
     assert sentinels.find_stale(5, max_age_s=3600) == []
 
 
+def test_resolve_project_query_aliases_from_overrides(monkeypatch):
+    sentinels.upsert_conversation(
+        conversation_id="lakua-1",
+        project="Lakua",
+        mtime=100,
+        exchange_count=2,
+        depth="standard",
+        topics="decisions",
+        preview="x",
+    )
+    monkeypatch.setattr(
+        "curios.config.get_project_overrides",
+        lambda: {
+            "home-VICOMTECH-jbruse-Documents-Lakua-GITLAB-dataviz-gova": "Lakua",
+        },
+    )
+    assert sentinels.resolve_project("dataviz_gova") == ["Lakua"]
+    assert sentinels.resolve_project("dataviz-gov") == ["Lakua"]
+    assert sentinels.resolve_project("dataviz_gov") == ["Lakua"]
+    assert sentinels.resolve_project("GOVA") == ["Lakua"]
+
+
 def test_find_stale_legacy_row_uses_indexed_at(tmp_path):
     """Legacy rows without file_mtime fall back to indexed_at comparison."""
     f = tmp_path / "legacy.jsonl"

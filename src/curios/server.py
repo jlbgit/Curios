@@ -3,7 +3,9 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -81,11 +83,50 @@ def _wrap(body: str) -> str:
 _client_instance: chromadb.PersistentClient | None = None
 _bm25_bootstrapped = False
 _last_discovery: float = 0.0
+_health_checked = False
+
+_HNSW_PROBE_TIMEOUT_S = 30
+
+
+def _hnsw_health_probe() -> bool:
+    """Return True if ChromaDB is healthy; wipe and return False if corrupted."""
+    global _health_checked
+    if _health_checked:
+        return True
+    _health_checked = True
+    if not CHROMADB_PATH.exists():
+        return True
+    probe_script = (
+        "import chromadb\n"
+        f"c = chromadb.PersistentClient(path={str(CHROMADB_PATH)!r})\n"
+        f"c.get_or_create_collection({COLLECTION_NAME!r}).count()\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe_script],
+            timeout=_HNSW_PROBE_TIMEOUT_S,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return True
+        log.error(
+            "HNSW health check failed (exit %d). "
+            "ChromaDB may be corrupted. Auto-wiping to trigger rebuild.",
+            result.returncode,
+        )
+    except subprocess.TimeoutExpired:
+        log.error(
+            "HNSW health check timed out — possible corruption. Auto-wiping."
+        )
+    shutil.rmtree(CHROMADB_PATH, ignore_errors=True)
+    sentinels.wipe()
+    return False
 
 
 def _get_client() -> chromadb.PersistentClient:
     global _client_instance
     if _client_instance is None:
+        _hnsw_health_probe()
         _client_instance = chromadb.PersistentClient(path=str(CHROMADB_PATH))
     return _client_instance
 
@@ -336,7 +377,9 @@ def _catch_up_index() -> None:
             return
         log.info("catch-up: %d transcript(s) to index", len(unindexed))
         with index_lock():
-            files_done, chunks = run_index(unindexed, force=True, dry_run=False)
+            files_done, chunks = run_index(
+                unindexed, force=True, dry_run=False, client=_get_client()
+            )
         if files_done:
             log.info("catch-up: indexed %d files (%d chunks)", files_done, chunks)
             _reset_client()

@@ -243,6 +243,24 @@ def test_cmd_claude_install_merges_claude_md(
     assert (ch / "skills" / "curios-keyword-discovery" / "SKILL.md").is_file()
 
 
+def _rules_bullets(text: str) -> list[str]:
+    start = text.index("## Rules\n") + len("## Rules\n")
+    rest = text[start:]
+    end = rest.find("\n## ")
+    section = rest if end == -1 else rest[:end]
+    return [line for line in section.splitlines() if line.startswith("- ")]
+
+
+def test_claude_append_rules_match_cursor_mdc() -> None:
+    from curios import install
+
+    mdc = install._package_text("curios.mdc")
+    if mdc.startswith("---"):
+        mdc = mdc.split("---", 2)[2]
+    append = install._package_claude_append()
+    assert _rules_bullets(mdc) == _rules_bullets(append)
+
+
 def test_cmd_claude_uninstall_removes_section_and_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

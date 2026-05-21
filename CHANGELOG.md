@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.4 — 2026-05-21
+
+### Bug fixes
+- **HNSW corruption on crash (BUG-2, critical):** `_catch_up_index()` in the MCP server now passes its existing `PersistentClient` to `run_index()` via a new keyword-only `client` parameter, eliminating the redundant second client that risked HNSW segment corruption when the process was killed mid-write. CLI callers (`curios index`, `curios import`, maintenance) are unaffected — they still create their own client as before.
+- **Memory spike during novelty labelling (BUG-1, high):** `_novelty_labels()` now queries ChromaDB in batches of `NOVELTY_BATCH_SIZE` (15) instead of sending all chunk texts at once. For a typical 90-chunk file against a 20K-vector HNSW index, peak RSS drops from ~765 MB to ~350 MB. Per-batch error handling falls back to `"novel"` for just the failing batch instead of the entire file.
+- **BM25 drift on partial bootstrap:** `_ensure_bm25()` now compares BM25 row count against ChromaDB via `_bm25_in_sync()` rather than checking `bm25.count() > 0`. When BM25 is partially populated (counts differ), it wipes and fully rebuilds. Previously, any non-zero BM25 count would skip the bootstrap even when BM25 and ChromaDB were out of sync — causing silent search degradation after prune or partial index failures.
+- **Project name resolution at query time:** `resolve_project()` in `sentinels.py` now falls back to slug-derived query aliases (`get_project_query_aliases()`) when exact, segment, and substring matching all fail. Aliases are derived automatically from `project_overrides.json` slug path segments (e.g. a slug containing `dataviz-gova` maps to the override target), with hyphen/underscore/case variants. An optional `project_query_aliases.json` in the data directory allows explicit mappings. Previously, users whose project slug differed from the stored name in ways not covered by substring matching (e.g. `dataviz-gov` vs a slug-encoded name) would silently get zero results.
+
+### Resilience
+- **HNSW health probe at startup:** on first `_get_client()` call, a subprocess probe runs `coll.count()` against the ChromaDB directory. If the subprocess crashes (e.g. SIGSEGV from corrupted HNSW) or times out, the server auto-wipes ChromaDB and sentinels and logs an error, breaking the permanent crash loop that previously required manual `curios index --rebuild`.
+
+### Claude Code support
+- **`curios-append.md`:** new file (`src/curios/claude/curios-append.md`) containing the Curios memory rules block for Claude Code's `CLAUDE.md`. Mirrors the `curios.mdc` Cursor rule surface: tool table, search topics, usage rules, and skill references. Shipped as package data, consumed by `curios install claude`.
+
+### Config
+- **`NOVELTY_BATCH_SIZE`:** new constant in `config.py` (default 15) controlling the max chunk texts per novelty query batch.
+- **`PROJECT_QUERY_ALIASES_PATH`:** new path constant pointing to `project_query_aliases.json` in the data directory for explicit query-to-project-name mappings.
+- **`get_project_query_aliases()`:** new function in `config.py` that builds the query alias map from both `project_query_aliases.json` and `project_overrides.json` slug segments.
+
+### Tests
+- **`test_install.py` — Claude drift detection:** `test_claude_append_rules_match_cursor_mdc()` asserts the Rules section bullets in `curios-append.md` exactly match those in `curios.mdc`, catching divergence when either file is updated.
+- **`test_server.py` — BM25 drift:** `test_ensure_bm25_rebuilds_when_partially_populated` and `test_ensure_bm25_skips_when_in_sync` cover the two branches of the fixed `_ensure_bm25` bootstrap logic.
+- **`test_sentinels.py` — query alias resolution:** new tests for the `resolve_project()` alias fallback path.
+- **`test_queue_and_catchup.py` — `run_index` mock signatures:** updated to accept `**kwargs` for the new `client` keyword argument.
+
 ## 0.6.3 — 2026-05-16
 
 ### MCP

@@ -236,9 +236,11 @@ def resolve_project(user_input: str) -> list[str]:
     """Map a user-provided project name to stored project name(s).
 
     Tries exact match first, then case-insensitive match on the last
-    segment (after '/'), then substring. Returns all matches so callers
-    can use IN-style filters.
+    segment (after '/'), then substring, then slug-derived query aliases.
+    Returns all matches so callers can use IN-style filters.
     """
+    from curios.config import get_project_query_aliases
+
     with _lock:
         conn = _get_conn()
         rows = conn.execute("SELECT DISTINCT project FROM conversations").fetchall()
@@ -264,6 +266,10 @@ def resolve_project(user_input: str) -> list[str]:
     substring = [p for p in stored if needle_lower in p.lower()]
     if substring:
         return substring
+
+    alias_target = get_project_query_aliases(stored).get(needle_lower)
+    if alias_target and alias_target in stored:
+        return [alias_target]
 
     return [user_input]
 
