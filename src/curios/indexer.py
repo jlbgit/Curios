@@ -29,6 +29,7 @@ from curios.config import (
     LOCK_TIMEOUT_S,
     MAX_CHUNK_CHARS,
     MIN_CHUNK_SIZE,
+    NOVELTY_BATCH_SIZE,
     NOVELTY_N_RESULTS,
     NOVELTY_THRESHOLD,
     RECAP_PREVIEW_MAX,
@@ -378,32 +379,40 @@ def _novelty_labels(
 ) -> list[str]:
     if not chunk_texts:
         return []
-    try:
-        res = coll.query(
-            query_texts=chunk_texts,
-            n_results=NOVELTY_N_RESULTS,
-            where={"project": {"$eq": project}},
-            include=["distances", "metadatas"],
-        )
-    except Exception as e:
-        log.debug("batched novelty query failed for conversation %s: %s", conversation_id, e)
-        return ["novel"] * len(chunk_texts)
-    all_dists = res.get("distances") or []
-    all_metas = res.get("metadatas") or []
     out: list[str] = []
-    for i in range(len(chunk_texts)):
-        dists = all_dists[i] if i < len(all_dists) else []
-        metas = all_metas[i] if i < len(all_metas) else []
-        label = "novel"
-        for dist, meta in zip(dists, metas):
-            if meta is None or dist is None:
-                continue
-            if meta.get("conversation_id") == conversation_id:
-                continue
-            if float(dist) < NOVELTY_DISTANCE_MAX:
-                label = "incremental"
-                break
-        out.append(label)
+    for i in range(0, len(chunk_texts), NOVELTY_BATCH_SIZE):
+        batch = chunk_texts[i : i + NOVELTY_BATCH_SIZE]
+        try:
+            res = coll.query(
+                query_texts=batch,
+                n_results=NOVELTY_N_RESULTS,
+                where={"project": {"$eq": project}},
+                include=["distances", "metadatas"],
+            )
+        except Exception as e:
+            log.debug(
+                "novelty query failed (batch %d) for conversation %s: %s",
+                i,
+                conversation_id,
+                e,
+            )
+            out.extend(["novel"] * len(batch))
+            continue
+        all_dists = res.get("distances") or []
+        all_metas = res.get("metadatas") or []
+        for j in range(len(batch)):
+            dists = all_dists[j] if j < len(all_dists) else []
+            metas = all_metas[j] if j < len(all_metas) else []
+            label = "novel"
+            for dist, meta in zip(dists, metas):
+                if meta is None or dist is None:
+                    continue
+                if meta.get("conversation_id") == conversation_id:
+                    continue
+                if float(dist) < NOVELTY_DISTANCE_MAX:
+                    label = "incremental"
+                    break
+            out.append(label)
     return out
 
 
@@ -580,11 +589,14 @@ def run_index(
     force: bool,
     dry_run: bool,
     project_override: str | None = None,
+    *,
+    client: chromadb.PersistentClient | None = None,
 ) -> tuple[int, int]:
     ensure_data_dir()
     CHROMADB_PATH.mkdir(parents=True, exist_ok=True)
     set_owner_only_permissions(CHROMADB_PATH)
-    client = chromadb.PersistentClient(path=str(CHROMADB_PATH))
+    if client is None:
+        client = chromadb.PersistentClient(path=str(CHROMADB_PATH))
     _ensure_schema(client)
     coll = _get_collections(client)
     total_chunks = 0

@@ -147,6 +147,8 @@ NOVELTY_THRESHOLD = _env_float("CURIOS_NOVELTY_THRESHOLD", 0.92)
 # Higher catches more potential duplicates but slows indexing.
 # Sensible range: 3–15. Default 8.
 NOVELTY_N_RESULTS = 8
+# Max chunk texts per novelty query batch (limits ONNX/HNSW peak memory).
+NOVELTY_BATCH_SIZE = 15
 
 # ── Stale file detection ────────────────────────────────────
 # At catch-up time (MCP tool call), sentinels indexed within this window
