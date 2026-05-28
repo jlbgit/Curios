@@ -1,6 +1,6 @@
 # Curios
 
-**v0.6.4**
+**v0.6.6**
 
 > Passive, local, verbatim, zero-extra-cost, lean memory for Cursor
 
@@ -202,10 +202,12 @@ Example layout on Linux (paths are the same relative names under `CURIOS_DATA` e
 All paths are defined in `src/curios/config.py` with sensible defaults. You can override them with environment variables for non-standard setups:
 
 
-| Variable             | Default                            | Purpose                                                                                |
-| -------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `CURIOS_DATA`        | Platform default (see table above) | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
-| `CURIOS_CURSOR_HOME` | `~/.cursor/`                       | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
+| Variable                          | Default                            | Purpose                                                                                |
+| --------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- |
+| `CURIOS_DATA`                     | Platform default (see table above) | Data directory root. ChromaDB, preferences, lock file, and schema state all live here. |
+| `CURIOS_CURSOR_HOME`              | `~/.cursor/`                       | Cursor home directory. Curios reads transcripts from `$CURIOS_CURSOR_HOME/projects/`.  |
+| `CURIOS_DISCOVERY_INDEX_GRACE_S`  | `30`                               | Seconds a freshly discovered (unqueued) transcript is held back before indexing. Prevents indexing partially-written active transcripts. |
+| `CURIOS_STALE_REINDEX_GRACE_S`    | `60`                               | Minimum seconds since a file was last indexed before stale detection can re-index it. Debounces active transcripts still being written. |
 
 
 Derived paths (not independently configurable — they follow `CURIOS_DATA`):
@@ -447,8 +449,11 @@ curios index --file PATH --project-name MyApp   # Force logical project when pat
 ```bash
 curios status                                    # Compact human-readable health check
 curios report                                    # Full human-readable report (see below)
+curios pending                                   # File-level indexing pipeline diagnostic (see below)
+curios pending --project Curios                  # Scope to one project
+curios pending --verbose                         # Add full paths, config, and error log even when clean
 curios recent                                    # Conversations active in the last 24 h (recap cache)
-curios recent --hours 72 --project Curios      # Time-windowed recap from the terminal
+curios recent --hours 72 --project Curios        # Time-windowed recap from the terminal
 curios search "concurrency locking"              # BM25 keyword search — no AI, instant (see Search Logic)
 curios search "RAG improvements" --since 720     # Limit to conversations active in the last 720 h
 curios search "auth decisions" --project MyApp --n 10  # Scoped + more results
@@ -469,6 +474,17 @@ curios import archive.tar.gz --dry-run           # Validate only
 
 A compact human-readable summary — schema version, chunk/conversation/project counts, DB and text size with estimated token count, depth and novelty split, and last index date. Use `curios report` for the full breakdown.
 
+`curios status` (and `report`, `search`, `recent`) run a best-effort catch-up before reading, so the output reflects recently closed sessions without requiring a manual `curios index`.
+
+Possible transcript status lines:
+
+```
+Transcripts: 493/493 indexed  [OK]
+Settling   : 1 fresh file(s) awaiting hook/grace
+```
+
+`Settling` means a very fresh transcript (mtime inside `DISCOVERY_INDEX_GRACE_S`) is intentionally waiting for the `sessionEnd` hook to queue it — this is not an error. `UNINDEXED` means a transcript outside the grace window has not been indexed and warrants investigation.
+
 ### `report` output
 
 A formatted report with sections:
@@ -480,6 +496,24 @@ A formatted report with sections:
 - **Projects** — table with chunks, conversation count, shallow%, novel%, and text size per project
 - **Shallow conversations** — lists conversations with fewer than `SHALLOW_THRESHOLD` (2) user exchanges, up to 20 entries, with a `prune --shallow` reminder
 - **Fully incremental conversations** — lists conversations where every chunk is `novelty=incremental` (content fully subsumed by earlier indexed material)
+
+### `pending` output
+
+A diagnostic report scoped to conversations that are **not cleanly indexed**. Intended for investigating why a transcript has not shown up in search results after a session closed.
+
+Sections:
+
+- **Summary** — total transcripts, indexed count, `Attention` count with `[OK]` / `[N PENDING]` status, optional `Transient` line for stale/settling/queued items that will self-resolve, last index run time
+- **Queued** — paths in `pending_index.txt` awaiting the next catch-up. Normal after a session closes; will be indexed on the next MCP tool call or `curios index`.
+- **Unindexed** — transcripts on disk with no sentinel record and outside the discovery grace window. These are genuine gaps — typically caused by a missed hook or a state reset.
+- **Stale** — sentinel exists but the transcript mtime is newer than the stored value. Will be re-indexed automatically on the next catch-up (stale detection), subject to `STALE_REINDEX_GRACE_S`.
+- **Settling** — fresh transcripts whose mtime is inside `DISCOVERY_INDEX_GRACE_S`. These are intentionally withheld from discovery — they are likely still being written to by an active session. Not an error.
+- **Orphaned sentinels** — sentinel rows pointing to transcript files that no longer exist on disk. Run `curios repair` to clean up.
+- **Pipeline status** — queue depth (valid vs. missing entries), whether the index lock is currently held by another process.
+- **Recent errors** — last error/warning lines from `index.log` (always printed when present; shown on `--verbose` even when absent).
+- **Config** — active grace/debounce timers and key file paths (shown when there are pending items or when `--verbose` is passed).
+
+`curios pending` runs a best-effort catch-up before reporting, so the output already reflects recently closed sessions. Exit code is `0` when there is nothing requiring attention (unindexed or orphaned-sentinel states); transient states (stale, settling, queued) resolve automatically and do not affect the exit code.
 
 ## Evaluation
 
@@ -550,7 +584,7 @@ Default runs use isolated `tmp_path` data dirs (Chroma + SQLite). No `curios ind
 | `storage`     | `test_bm25`, `test_sentinels`                 | BM25 FTS5 sidecar, sentinels recap cache, mtime tracking                       |
 | `server`      | `test_server`                                 | Retrieval helpers, RRF fusion, MCP tool output shape (mocked DB)               |
 | `integration` | `test_integration`                            | Synthetic transcripts → index → search/recap/related                           |
-| `maintenance` | `test_maintain`                               | Prune shallow/stale/project, build-bm25, status/report/verify/repair           |
+| `maintenance` | `test_maintain`                               | Prune shallow/stale/project, build-bm25, status/report/verify/repair/pending   |
 | `cli`         | `test_cli`, `test_install`                    | `curios` argv routing; Cursor/Claude install, check, uninstall, validation (tmp homes)  |
 | `live`        | `test_mcp_interactions`, `test_token_savings` | Real `CURIOS_DATA` index; **skipped by default** — run `pytest -m live`        |
 | `benchmark`   | `test_token_savings`                          | Token cost comparison; **skipped by default** — run `pytest -m benchmark`      |
