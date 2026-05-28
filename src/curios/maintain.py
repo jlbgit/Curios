@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
 import time
 import tarfile
+from contextlib import contextmanager
 from io import BytesIO
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import chromadb
 
@@ -26,7 +28,11 @@ from curios.config import (
     CLI_MAX_LIST_ITEMS,
     CLI_RULER_WIDTH,
     COLLECTION_NAME,
+    DISCOVERY_INDEX_GRACE_S,
     INDEX_LOG_PATH,
+    LOCK_PATH,
+    STALE_MAX_AGE_S,
+    STALE_REINDEX_GRACE_S,
     LAST_INDEXED_PATH,
     SCHEMA_STATE_PATH,
     SCHEMA_VERSION,
@@ -38,7 +44,12 @@ from curios.config import (
     import_slug_for_project,
     transcript_relative_path,
 )
-from curios.indexer import PENDING_QUEUE_PATH, discover_transcripts, index_lock, run_index
+from curios.indexer import (
+    PENDING_QUEUE_PATH,
+    discover_transcripts,
+    index_lock,
+    run_index,
+)
 
 _W = CLI_RULER_WIDTH
 _MAX_LIST = CLI_MAX_LIST_ITEMS
@@ -413,6 +424,9 @@ class IndexHealth:
     last_chunks_written: int = 0
     total_transcripts: int = 0
     unindexed_count: int = 0
+    settling_count: int = 0
+    stale_count: int = 0
+    settling_files: list[tuple[str, int]] = field(default_factory=list)
     pending_queue_count: int = 0
     recent_errors: list[str] = field(default_factory=list)
 
@@ -430,10 +444,24 @@ def _collect_index_health() -> IndexHealth:
 
     all_paths = discover_transcripts()
     h.total_transcripts = len(all_paths)
-    h.unindexed_count = sum(
-        1 for p in all_paths
-        if not sentinels.is_indexed(str(p.resolve()), SCHEMA_VERSION)
-    )
+    now = int(time.time())
+    for p in all_paths:
+        try:
+            mtime = int(p.stat().st_mtime)
+            ap = str(p.resolve())
+            age_s = max(0, now - mtime)
+        except OSError:
+            continue
+        if sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+            continue
+        if sentinels.is_indexed(ap, SCHEMA_VERSION):
+            h.stale_count += 1
+            continue
+        if DISCOVERY_INDEX_GRACE_S > 0 and age_s < DISCOVERY_INDEX_GRACE_S:
+            h.settling_count += 1
+            h.settling_files.append((p.name, age_s))
+        else:
+            h.unindexed_count += 1
 
     if PENDING_QUEUE_PATH.is_file():
         try:
@@ -463,18 +491,347 @@ def _print_index_health(h: IndexHealth, verbose: bool = False) -> None:
     else:
         print("  Last run   : never recorded")
 
-    indexed = h.total_transcripts - h.unindexed_count
+    indexed_total = h.total_transcripts - h.settling_count - h.stale_count
+    indexed = indexed_total - h.unindexed_count
     status = "OK" if h.unindexed_count == 0 else f"{h.unindexed_count} UNINDEXED"
-    print(f"  Transcripts: {indexed}/{h.total_transcripts} indexed  [{status}]")
+    print(f"  Transcripts: {indexed}/{indexed_total} indexed  [{status}]")
 
     if h.pending_queue_count:
         print(f"  Queue      : {h.pending_queue_count} file(s) pending")
+    if h.settling_count:
+        print(f"  Settling   : {h.settling_count} fresh file(s) awaiting hook/grace")
+        if verbose:
+            for name, age_s in h.settling_files:
+                print(f"    {name}  ({age_s}s old)")
+    if h.stale_count:
+        print(
+            f"  Stale      : {h.stale_count} file(s) with content changes "
+            f"(will re-index on next catch-up)"
+        )
+    if h.settling_count or h.stale_count:
+        print(
+            f"  Config     : discovery_grace={DISCOVERY_INDEX_GRACE_S}s  "
+            f"stale_debounce={STALE_REINDEX_GRACE_S}s"
+        )
 
     if h.recent_errors:
         print(f"  Errors     : {len(h.recent_errors)} recent issue(s) in index.log")
         if verbose:
             for err in h.recent_errors:
                 print(f"    {err}")
+
+
+@dataclass
+class _PendingFile:
+    path: Path
+    project: str
+    conversation_id: str
+    state: str
+    age_s: int
+    file_size: int
+    indexed_at: int = 0
+    stored_mtime: int = 0
+    in_queue: bool = False
+
+
+@dataclass
+class PendingReport:
+    """Structured result of _collect_pending_report()."""
+
+    total_transcripts: int = 0
+    indexed_count: int = 0
+    unindexed: list[_PendingFile] = field(default_factory=list)
+    stale: list[_PendingFile] = field(default_factory=list)
+    settling: list[_PendingFile] = field(default_factory=list)
+    queued_only: list[_PendingFile] = field(default_factory=list)
+    orphaned_sentinels: list[str] = field(default_factory=list)
+    queue_raw_entries: int = 0
+    queue_valid_entries: int = 0
+    lock_held: bool = False
+    recent_errors: list[str] = field(default_factory=list)
+    last_indexed_at: int = 0
+
+    def attention_count(self) -> int:
+        """States that require user action."""
+        return len(self.unindexed) + len(self.orphaned_sentinels)
+
+    def transient_count(self) -> int:
+        """States that self-resolve on next catch-up."""
+        return len(self.stale) + len(self.settling) + len(self.queued_only)
+
+
+def _collect_pending_report(project_filter: str | None = None) -> PendingReport:
+    r = PendingReport()
+    now = int(time.time())
+
+    if LAST_INDEXED_PATH.is_file():
+        try:
+            data = json.loads(LAST_INDEXED_PATH.read_text(encoding="utf-8"))
+            r.last_indexed_at = int(data.get("indexed_at", 0))
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+
+    queued_abs: set[str] = set()
+    if PENDING_QUEUE_PATH.is_file():
+        try:
+            lines = PENDING_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+            r.queue_raw_entries = sum(1 for ln in lines if ln.strip())
+            for ln in lines:
+                ln = ln.strip()
+                if ln:
+                    p = Path(ln)
+                    if p.is_file():
+                        queued_abs.add(str(p.resolve()))
+                        r.queue_valid_entries += 1
+        except OSError:
+            pass
+
+    try:
+        import fcntl
+        fp = open(LOCK_PATH, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            r.lock_held = True
+        finally:
+            fp.close()
+    except (ImportError, OSError):
+        pass
+
+    all_paths = discover_transcripts(project_filter)
+    r.total_transcripts = len(all_paths)
+
+    for p in all_paths:
+        try:
+            st = p.stat()
+            mtime = int(st.st_mtime)
+            file_size = st.st_size
+            ap = str(p.resolve())
+            age_s = max(0, now - mtime)
+        except OSError:
+            continue
+
+        project = extract_project_name(p)
+        cid = conversation_id_from_path(p)
+        in_queue = ap in queued_abs
+
+        pf = _PendingFile(
+            path=p, project=project, conversation_id=cid,
+            state="", age_s=age_s, file_size=file_size, in_queue=in_queue,
+        )
+
+        if sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+            r.indexed_count += 1
+            continue
+
+        if sentinels.is_indexed(ap, SCHEMA_VERSION):
+            pf.state = "stale"
+            sinfo = sentinels.get_sentinel(ap)
+            if sinfo:
+                pf.stored_mtime = sinfo["file_mtime"]
+                pf.indexed_at = sinfo["indexed_at"]
+            r.stale.append(pf)
+            continue
+
+        if in_queue:
+            pf.state = "queued"
+            r.queued_only.append(pf)
+            continue
+
+        if DISCOVERY_INDEX_GRACE_S > 0 and age_s < DISCOVERY_INDEX_GRACE_S:
+            pf.state = "settling"
+            r.settling.append(pf)
+            continue
+
+        pf.state = "unindexed"
+        r.unindexed.append(pf)
+
+    all_sentinel_paths = sentinels.iter_sentinel_abs_paths()
+    for ap in all_sentinel_paths:
+        if not os.path.isfile(ap):
+            r.orphaned_sentinels.append(ap)
+
+    if INDEX_LOG_PATH.is_file():
+        try:
+            raw = INDEX_LOG_PATH.read_text(encoding="utf-8")
+            for line in raw.splitlines()[-50:]:
+                low = line.lower()
+                if "error" in low or "traceback" in low or "failed" in low:
+                    r.recent_errors.append(line.rstrip())
+        except OSError:
+            pass
+        r.recent_errors = r.recent_errors[-10:]
+
+    return r
+
+
+def _fmt_age(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    hours = seconds // 3600
+    mins = (seconds % 3600) // 60
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days = hours // 24
+    remaining_hours = hours % 24
+    return f"{days}d {remaining_hours}h"
+
+
+def _print_pending_section(
+    label: str,
+    files: list[_PendingFile],
+    description: str,
+    hint: str,
+    verbose: bool,
+) -> None:
+    print(_hr(f"{label} ({len(files)})"))
+    if not files:
+        print("  (none)")
+        print()
+        return
+    print(f"  {description}")
+    print()
+    col_w = max(len(pf.project) for pf in files) if files else 7
+    col_w = max(col_w, 7)
+    for pf in sorted(files, key=lambda f: f.age_s):
+        name = pf.path.stem[:36]
+        age = _fmt_age(pf.age_s)
+        size = _fmt_bytes(pf.file_size)
+        extra = ""
+        if pf.state == "stale" and pf.indexed_at:
+            extra = f"  indexed {_fmt_age(max(0, int(time.time()) - pf.indexed_at))} ago"
+        if pf.in_queue and pf.state != "queued":
+            extra += "  [+queued]"
+        print(f"  {pf.project:<{col_w}}  {name:<36}  {age:>8}  {size:>8}{extra}")
+        if verbose:
+            print(f"  {'':>{col_w}}  {pf.path}")
+    print()
+    if hint:
+        print(f"  {hint}")
+        print()
+
+
+def cmd_pending(*, project: str | None = None, verbose: bool = False) -> int:
+    """Detailed diagnostic of every conversation not cleanly indexed."""
+    _catch_up_before_read("pending", quiet=not verbose)
+
+    r = _collect_pending_report(project)
+    attention = r.attention_count()
+    transient = r.transient_count()
+
+    print("═" * _W)
+    title = "CURIOS PENDING"
+    subtitle = "Index Pipeline Diagnostic"
+    gap = _W - len(title) - len(subtitle) - 3
+    print(f" {title}{' ' * max(gap, 1)}{subtitle}")
+    print("═" * _W)
+    print()
+
+    scope = f"  (filtered: {project})" if project else ""
+    status_icon = "OK" if attention == 0 else f"{attention} PENDING"
+    print(_hr("SUMMARY"))
+    print(f"  Transcripts : {r.total_transcripts}{scope}")
+    print(f"  Indexed     : {r.indexed_count}")
+    print(f"  Attention   : {attention}  [{status_icon}]")
+    if transient > 0:
+        detail = ", ".join(
+            f"{n} {label}"
+            for n, label in (
+                (len(r.queued_only), "queued"),
+                (len(r.stale), "stale"),
+                (len(r.settling), "settling"),
+            )
+            if n
+        )
+        print(f"  Transient   : {transient}  ({detail} — will self-resolve)")
+    if r.last_indexed_at:
+        print(f"  Last run    : {_fmt_date(r.last_indexed_at)} ({_fmt_age(max(0, int(time.time()) - r.last_indexed_at))} ago)")
+    else:
+        print("  Last run    : never recorded")
+    print()
+
+    _print_pending_section(
+        "QUEUED", r.queued_only,
+        "In pending_index.txt — awaiting next catch-up pass.",
+        "→ Will be indexed on next MCP tool call or `curios index`.",
+        verbose,
+    )
+
+    _print_pending_section(
+        "UNINDEXED", r.unindexed,
+        "On disk with no sentinel record (never indexed or sentinel lost).",
+        "→ Run `curios index` or wait for the next catch-up.",
+        verbose,
+    )
+
+    _print_pending_section(
+        "STALE", r.stale,
+        "Sentinel exists but file has been modified since last indexing.",
+        "→ Will be re-indexed on next catch-up (stale detection).",
+        verbose,
+    )
+
+    _print_pending_section(
+        "SETTLING", r.settling,
+        f"Fresh files within the discovery grace period ({DISCOVERY_INDEX_GRACE_S}s).\n"
+        f"  Likely still being written to by an active conversation.",
+        "→ Normal — will be indexed after the session ends and grace expires.",
+        verbose,
+    )
+
+    orphan_header = f"ORPHANED SENTINELS ({len(r.orphaned_sentinels)})"
+    if project:
+        orphan_header += " — all projects"
+    print(_hr(orphan_header))
+    if not r.orphaned_sentinels:
+        print("  (none)")
+    else:
+        print("  Sentinel entries pointing to files no longer on disk.")
+        print()
+        for ap in r.orphaned_sentinels[:_MAX_LIST]:
+            print(f"  {ap}")
+        if len(r.orphaned_sentinels) > _MAX_LIST:
+            print(f"  ... and {len(r.orphaned_sentinels) - _MAX_LIST} more")
+        print()
+        print("  → Run `curios repair` to clean up, or `curios prune --stale` to also remove chunks.")
+    print()
+
+    print(_hr("PIPELINE STATUS"))
+    queue_label = "empty"
+    if r.queue_raw_entries:
+        stale_q = r.queue_raw_entries - r.queue_valid_entries
+        queue_label = f"{r.queue_valid_entries} valid"
+        if stale_q:
+            queue_label += f", {stale_q} stale (file missing)"
+    print(f"  Pending queue : {queue_label}")
+    print(f"  Index lock    : {'HELD (indexing in progress)' if r.lock_held else 'free'}")
+    print()
+
+    if r.recent_errors:
+        print(_hr(f"RECENT ERRORS ({len(r.recent_errors)})"))
+        for err in r.recent_errors:
+            print(f"  {err}")
+        print()
+        print(f"  → Full log: {INDEX_LOG_PATH}")
+        print()
+    elif verbose:
+        print(_hr("RECENT ERRORS"))
+        print("  (none in index.log)")
+        print()
+
+    if verbose or attention > 0:
+        print(_hr("CONFIG"))
+        print(f"  discovery_grace : {DISCOVERY_INDEX_GRACE_S}s")
+        print(f"  stale_debounce  : {STALE_REINDEX_GRACE_S}s")
+        print(f"  stale_max_age   : {STALE_MAX_AGE_S}s ({_fmt_age(STALE_MAX_AGE_S)})")
+        print(f"  pending_queue   : {PENDING_QUEUE_PATH}")
+        print(f"  index_log       : {INDEX_LOG_PATH}")
+        print()
+
+    return 0 if attention == 0 else 1
 
 
 def cmd_build_bm25() -> int:
@@ -676,6 +1033,35 @@ _SEARCH_SNIPPET_MIN = 48
 _SEARCH_SNIPPET_MAX = 12_000
 
 
+_CURIOS_LOGGER_NAMES = ("curios", "curios.indexer", "curios.server", "curios.bm25")
+
+
+@contextmanager
+def _quiet_catch_up_logging() -> Iterator[None]:
+    """Hide catch-up INFO lines (discovery summary, per-file indexed, etc.)."""
+    saved: list[tuple[logging.Logger, int]] = []
+    for name in _CURIOS_LOGGER_NAMES:
+        lg = logging.getLogger(name)
+        saved.append((lg, lg.level))
+        lg.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        for lg, level in saved:
+            lg.setLevel(level)
+
+
+def _catch_up_before_read(_command: str, *, quiet: bool = True) -> None:
+    """Best-effort catch-up so read commands see recently closed sessions."""
+    from curios.server import _catch_up_index
+
+    if quiet:
+        with _quiet_catch_up_logging():
+            _catch_up_index()
+    else:
+        _catch_up_index()
+
+
 def cmd_search(
     query: str,
     project: str | None,
@@ -683,6 +1069,7 @@ def cmd_search(
     snippet_chars: int = _SEARCH_SNIPPET_DEFAULT,
     since_hours: int | None = None,
 ) -> int:
+    _catch_up_before_read("search")
     snip = max(_SEARCH_SNIPPET_MIN, min(int(snippet_chars), _SEARCH_SNIPPET_MAX))
     resolved = sentinels.resolve_project(project) if project else None
     since_ts = int(time.time()) - since_hours * 3600 if since_hours is not None else None
@@ -728,7 +1115,8 @@ def cmd_search(
     return 0
 
 
-def cmd_status() -> int:
+def cmd_status(*, verbose: bool = False) -> int:
+    _catch_up_before_read("status", quiet=not verbose)
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1
@@ -756,11 +1144,12 @@ def cmd_status() -> int:
     print(f"Updated : {_fmt_date(s.last_mtime)}")
     print()
     h = _collect_index_health()
-    _print_index_health(h, verbose=True)
+    _print_index_health(h, verbose=verbose)
     return 0
 
 
 def cmd_report() -> int:
+    _catch_up_before_read("report", quiet=True)
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1

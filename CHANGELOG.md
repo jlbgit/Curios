@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.6.6 — 2026-05-28
+
+### CLI
+- **`curios pending`:** new command for detailed inspection of the indexing pipeline. Shows every conversation that is not cleanly indexed, classified by state:
+  - **Queued** — path is in `pending_index.txt` and will be indexed on the next catch-up pass
+  - **Unindexed** — transcript is on disk, past the grace window, with no sentinel record (missed hook or lost state)
+  - **Stale** — sentinel exists but the file has been modified since it was last indexed
+  - **Settling** — file is inside `DISCOVERY_INDEX_GRACE_S` (likely still being written to by an active session)
+  - **Orphaned sentinels** — sentinel rows pointing to files no longer on disk
+  - **Pipeline status** — pending queue depth, valid vs. missing queue entries, whether the index lock is currently held
+  - **Recent errors** — last error/warning lines from `index.log`
+  - **Config** — active grace/debounce timers and key file paths (always shown when there are pending items; shown on `--verbose` when everything is clean)
+  - `--project NAME` filters to one project; `--verbose` adds full file paths and shows the errors/config sections even when clean
+
+### Internal
+- **`sentinels.get_sentinel(abs_path)`:** new public function returning `{file_mtime, indexed_at}` for a sentinel row (or `None`), replacing direct `_get_conn()` access from `maintain.py`.
+
+### Post-implementation audit fixes
+- **Attention vs transient split:** `PendingReport.total_pending()` replaced by `attention_count()` (unindexed + orphaned sentinels — requires user action) and `transient_count()` (stale + settling + queued — self-resolve). Summary line changed from `Pending:` to `Attention:` with a conditional `Transient:` detail line. Exit code and CONFIG section trigger now follow `attention_count` only — a normal active session with a settling transcript exits `0`.
+- **Orphaned sentinels scope note:** when `--project` is active, the orphaned sentinels section header appends `— all projects` to clarify that sentinel scanning is not project-filtered.
+- **Dead code removed:** unused `classified` set and six `classified.add()` calls removed; double `p.stat()` call collapsed to a single `st = p.stat()`.
+- **Tests:** 215 passed (unchanged).
+
+## 0.6.5 — 2026-05-28
+
+### Bug fixes — automatic indexing pipeline
+
+Six bugs in the passive indexing pipeline were identified and fixed. Together they could leave transcripts unindexed after a session closed, or produce false `UNINDEXED` alarms in `curios status`.
+
+- **CLI read commands were passive (P1):** `curios status`, `curios report`, `curios search`, and `curios recent` now call `_catch_up_before_read()` before inspecting the index, matching the behaviour of MCP tools. Previously these commands could show stale data even when the pending queue had entries.
+- **Discovery throttle removed (P1):** `_catch_up_index()` previously ran full transcript discovery only every `DISCOVERY_INTERVAL_S` (300 s) per MCP process. Transcripts missed by the hook could sit unindexed until the interval elapsed. Full discovery now runs on every catch-up — it is fast enough (sentinel check skips already-indexed files) and this is the only reliable way to recover from missed hooks. `DISCOVERY_INTERVAL_S` and `_last_discovery` removed.
+- **Fresh unqueued transcripts indexed too early (P1):** after removing the throttle, discovery could pick up a transcript still being written by Cursor. Added `DISCOVERY_INDEX_GRACE_S` (default 30 s, env `CURIOS_DISCOVERY_INDEX_GRACE_S`). Discovery skips files whose mtime is inside the grace window unless they were explicitly queued by the `sessionEnd` hook (queued paths bypass grace, since the hook signals the file is finalised).
+- **Stale detection reindexed active files too soon (P1):** `sentinels.find_stale()` could immediately re-flag a file that had just been indexed if the writer appended more content. Added `STALE_REINDEX_GRACE_S` (default 60 s, env `CURIOS_STALE_REINDEX_GRACE_S`) as a `min_index_age_s` parameter: a file indexed less than this many seconds ago is not considered stale even when its mtime has changed.
+- **`status` reported grace-skipped files as `UNINDEXED` (P2):** `curios status` counted every non-indexed transcript as a failure. Files intentionally skipped by discovery grace are now classified as `settling` and displayed separately — they are not counted as failures. `IndexHealth` gains a `settling_count` field; the status line now reads `Settling: N fresh file(s) awaiting hook/grace` when applicable.
+- **MCP and CLI catch-up could race (P2):** `_catch_up_index()` acquired the file lock only around `run_index()`. Two concurrent processes (MCP server + CLI `status`) could both decide a file needed indexing before either had updated sentinels. The entire catch-up decision — discovery, queue drain, stale detection, sentinel check, deduplication, and `run_index()` — now runs inside `index_lock()`. A second process waits, then re-checks sentinels and finds nothing to do.
+
+### Config
+- **`STALE_REINDEX_GRACE_S`** (default 60 s, env `CURIOS_STALE_REINDEX_GRACE_S`): minimum time since a file was indexed before stale detection can re-index it.
+- **`DISCOVERY_INDEX_GRACE_S`** (default 30 s, env `CURIOS_DISCOVERY_INDEX_GRACE_S`): fresh unqueued files younger than this are skipped by discovery.
+- **Removed `DISCOVERY_INTERVAL_S`** and `_last_discovery`.
+
+### Tests
+- New regression tests: CLI status triggering catch-up, discovery on every call, unqueued transcript recovery, fresh transcript grace, queued transcript bypassing grace, stale debounce, `Settling` status classification, catch-up scan under lock.
+- Two pre-existing `find_stale` tests updated to pass `min_index_age_s=0` (they relied on the old behaviour of no grace period).
+- Final suite: **87 passed**.
+
 ## 0.6.4 — 2026-05-21
 
 ### Bug fixes

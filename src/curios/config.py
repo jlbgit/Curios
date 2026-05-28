@@ -157,12 +157,16 @@ NOVELTY_BATCH_SIZE = 15
 # but stats more rows. Sensible range: 1800–86400. Default 3600 (1 hour).
 # Override: CURIOS_STALE_MAX_AGE_S.
 STALE_MAX_AGE_S = _env_int("CURIOS_STALE_MAX_AGE_S", 86400) # 1 day
-# Seconds between full transcript discovery scans in the MCP server.
-# Each MCP tool call drains the queue and checks stale files; full
-# discovery re-scans all transcript dirs for anything the hook missed.
-# Sensible range: 120–900. Default 300 (5 minutes).
-# Override: CURIOS_DISCOVERY_INTERVAL_S.
-DISCOVERY_INTERVAL_S = _env_int("CURIOS_DISCOVERY_INTERVAL_S", 300)
+# Minimum age since a file was last indexed before stale detection will
+# re-index it again. This debounces active transcripts that are still being
+# written after an MCP catch-up pass. Override: CURIOS_STALE_REINDEX_GRACE_S.
+STALE_REINDEX_GRACE_S = _env_int("CURIOS_STALE_REINDEX_GRACE_S", 60)
+# Full transcript discovery runs on every catch-up. It is intentionally cheap
+# compared with indexing and closes gaps when IDE hooks miss a transcript path.
+# Discovery skips very fresh unqueued files so active transcripts are not
+# indexed before the sessionEnd hook has a chance to queue the final path.
+# Queued paths bypass this grace. Override: CURIOS_DISCOVERY_INDEX_GRACE_S.
+DISCOVERY_INDEX_GRACE_S = _env_int("CURIOS_DISCOVERY_INDEX_GRACE_S", 30)
 
 # ── Topic scoring ───────────────────────────────────────────
 # Each chunk's user+assistant text is scanned for keyword hits from

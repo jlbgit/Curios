@@ -3,10 +3,12 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Annotated, Any, Iterator
@@ -29,6 +31,7 @@ from curios.config import (
     CHROMADB_PATH,
     COLLECTION_NAME,
     DECISION_BOOST,
+    DISCOVERY_INDEX_GRACE_S,
     FIELD_QUERY_TEMPLATES,
     HYBRID_SEARCH_ENABLED,
     MAX_CHUNKS_PER_CONV,
@@ -51,7 +54,6 @@ from curios.config import (
     SEARCH_FETCH_MIN,
     SEARCH_MAX_TEXT,
     SEARCH_OVERFETCH_FACTOR,
-    DISCOVERY_INTERVAL_S,
     get_compiled_topic_patterns,
     get_embedding_function,
     get_topic_keywords,
@@ -82,7 +84,6 @@ def _wrap(body: str) -> str:
 
 _client_instance: chromadb.PersistentClient | None = None
 _bm25_bootstrapped = False
-_last_discovery: float = 0.0
 _health_checked = False
 
 _HNSW_PROBE_TIMEOUT_S = 30
@@ -332,51 +333,83 @@ def _ensure_bm25(coll) -> None:
 def _catch_up_index() -> None:
     """Index transcripts missed by the session hook, then drain the queue.
 
-    Two phases:
-    1. Full discovery (every DISCOVERY_INTERVAL_S): scans all transcript
-       dirs for files not in sentinels.
-    2. Queue drain + stale check (every call): processes paths queued by
-       the session hook and detects mtime-changed files. This is cheap.
+    Phases:
+    1. Full discovery: scans transcript dirs for files not in sentinels.
+    2. Queue drain + stale check: processes paths queued by the session hook
+       and detects mtime-changed files.
 
     All ChromaDB writes happen in-process (the MCP server), avoiding the
     cross-process HNSW contention that corrupted the DB before.
     """
-    global _last_discovery
     try:
         from curios.config import SCHEMA_VERSION
-        from curios.indexer import discover_transcripts, drain_pending_queue, run_index
+        from curios.indexer import (
+            discover_transcripts,
+            drain_pending_queue,
+            run_index,
+        )
 
-        unindexed: list[Path] = []
-        seen: set[str] = set()
-
-        def _enqueue(p: Path) -> None:
-            try:
-                ap = str(p.resolve())
-                mtime = int(p.stat().st_mtime)
-            except OSError:
-                return
-            if ap in seen:
-                return
-            seen.add(ap)
-            if not sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
-                unindexed.append(p)
-
-        now = time.time()
-        if now - _last_discovery >= DISCOVERY_INTERVAL_S:
-            for p in discover_transcripts():
-                _enqueue(p)
-            _last_discovery = now
-
-        for qp in drain_pending_queue():
-            _enqueue(qp)
-
-        for sp in sentinels.find_stale(SCHEMA_VERSION):
-            _enqueue(Path(sp))
-
-        if not unindexed:
-            return
-        log.info("catch-up: %d transcript(s) to index", len(unindexed))
         with index_lock():
+            unindexed: list[Path] = []
+            seen: set[str] = set()
+            now = int(time.time())
+            from_queue = 0
+            from_stale = 0
+            skipped_grace = 0
+            skipped_indexed = 0
+
+            def _enqueue(p: Path, *, source: str) -> None:
+                nonlocal from_queue, from_stale, skipped_grace, skipped_indexed
+                try:
+                    ap = str(p.resolve())
+                    mtime = int(p.stat().st_mtime)
+                except OSError:
+                    return
+                if ap in seen:
+                    return
+                if (
+                    source == "discovery"
+                    and DISCOVERY_INDEX_GRACE_S > 0
+                    and max(0, now - mtime) < DISCOVERY_INDEX_GRACE_S
+                ):
+                    skipped_grace += 1
+                    return
+                seen.add(ap)
+                if sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+                    skipped_indexed += 1
+                    return
+                unindexed.append(p)
+                if source == "queue":
+                    from_queue += 1
+                elif source == "stale":
+                    from_stale += 1
+
+            discovered_paths = discover_transcripts()
+            discovered_n = len(discovered_paths)
+            for p in discovered_paths:
+                _enqueue(p, source="discovery")
+
+            queue_paths = drain_pending_queue()
+            for qp in queue_paths:
+                _enqueue(qp, source="queue")
+
+            stale_paths = sentinels.find_stale(SCHEMA_VERSION)
+            for sp in stale_paths:
+                _enqueue(Path(sp), source="stale")
+
+            to_index = len(unindexed)
+            log.info(
+                "catch-up: discovered=%d queued=%d stale=%d | "
+                "skipped: indexed=%d grace=%d | to_index=%d",
+                discovered_n,
+                from_queue,
+                from_stale,
+                skipped_indexed,
+                skipped_grace,
+                to_index,
+            )
+            if not unindexed:
+                return
             files_done, chunks = run_index(
                 unindexed, force=True, dry_run=False, client=_get_client()
             )
@@ -384,13 +417,34 @@ def _catch_up_index() -> None:
             log.info("catch-up: indexed %d files (%d chunks)", files_done, chunks)
             _reset_client()
             from curios.config import LAST_INDEXED_PATH
+
             LAST_INDEXED_PATH.parent.mkdir(parents=True, exist_ok=True)
-            LAST_INDEXED_PATH.write_text(
-                json.dumps({"indexed_at": int(time.time()), "files_done": files_done, "chunks_written": chunks}, indent=2),
-                encoding="utf-8",
+            payload = json.dumps(
+                {
+                    "indexed_at": int(time.time()),
+                    "files_done": files_done,
+                    "chunks_written": chunks,
+                },
+                indent=2,
             )
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                dir=str(LAST_INDEXED_PATH.parent),
+                prefix=f".{LAST_INDEXED_PATH.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tf:
+                tmp_name = tf.name
+                tf.write(payload)
+            try:
+                os.replace(tmp_name, LAST_INDEXED_PATH)
+            except BaseException:
+                Path(tmp_name).unlink(missing_ok=True)
+                raise
     except Exception as e:
-        log.warning("catch-up index failed: %s", e)
+        log.warning("catch-up index failed: %s", e, exc_info=True)
 
 
 def _resolve_project(project: str | None) -> list[str] | None:
