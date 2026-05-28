@@ -210,6 +210,17 @@ def test_delete_sentinel():
     assert not sentinels.is_indexed(ap, 5)
 
 
+def test_find_stale_skips_recently_indexed_active_file(tmp_path):
+    p = tmp_path / "active.jsonl"
+    p.write_text("old", encoding="utf-8")
+    ap = str(p.resolve())
+    sentinels.mark_indexed(ap, 5, file_mtime=1)
+    os.utime(p, (2, 2))
+
+    assert sentinels.find_stale(5, max_age_s=3600, min_index_age_s=60) == []
+    assert sentinels.find_stale(5, max_age_s=3600, min_index_age_s=0) == [ap]
+
+
 def test_delete_conversations():
     sentinels.upsert_conversation(
         conversation_id="del-me",
@@ -412,11 +423,11 @@ def test_find_stale_detects_modified_file(tmp_path):
     stored_mtime = int(f.stat().st_mtime)
 
     sentinels.mark_indexed(ap, 5, file_mtime=stored_mtime)
-    assert sentinels.find_stale(5) == []
+    assert sentinels.find_stale(5, min_index_age_s=0) == []
 
     future = stored_mtime + 10
     os.utime(f, (future, future))
-    stale = sentinels.find_stale(5)
+    stale = sentinels.find_stale(5, min_index_age_s=0)
     assert ap in stale
 
 
@@ -494,5 +505,5 @@ def test_find_stale_legacy_row_uses_indexed_at(tmp_path):
 
     future = int(time.time()) + 100
     os.utime(f, (future, future))
-    stale = sentinels.find_stale(5)
+    stale = sentinels.find_stale(5, min_index_age_s=0)
     assert ap in stale

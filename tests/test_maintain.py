@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -263,6 +264,65 @@ def test_cmd_status_report_verify_smoke(curios_data_env, capsys):
     assert maintain.cmd_verify() == 0
     out3 = capsys.readouterr().out
     assert "total_issues" in out3
+
+
+def test_cmd_status_runs_catchup_before_reading_index(
+    curios_data_env, monkeypatch, capsys
+):
+    from curios import maintain
+
+    chroma_path = curios_data_env / "curios_data" / "chromadb"
+    set_owner_only_permissions(chroma_path)
+    make_chroma_collection(chroma_path)
+
+    events: list[str] = []
+
+    def fake_catch_up(command: str) -> None:
+        events.append(f"catch-up:{command}")
+
+    def fake_collect_stats():
+        events.append("collect-stats")
+        return maintain.StatsResult(
+            total_chunks=0,
+            last_mtime=0,
+            db_size_bytes=0,
+            total_chars=0,
+            topics=Counter(),
+            novelty=Counter(),
+            depth=Counter(),
+            by_project={},
+            conversations={},
+        )
+
+    monkeypatch.setattr(maintain, "_catch_up_before_read", fake_catch_up)
+    monkeypatch.setattr(maintain, "_collect_stats", fake_collect_stats)
+    monkeypatch.setattr(maintain, "_collect_index_health", maintain.IndexHealth)
+
+    assert maintain.cmd_status() == 0
+    capsys.readouterr()
+    assert events == ["catch-up:status", "collect-stats"]
+
+
+def test_index_health_reports_fresh_unindexed_as_settling(
+    curios_data_env, monkeypatch, capsys
+):
+    from curios import maintain
+
+    proj_base = curios_data_env / "projects"
+    transcript = proj_base / "slug" / "agent-transcripts" / "fresh.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"role":"user","message":{"content":"fresh"}}\n', encoding="utf-8")
+
+    monkeypatch.setattr(maintain, "DISCOVERY_INDEX_GRACE_S", 60)
+
+    h = maintain._collect_index_health()
+
+    assert h.unindexed_count == 0
+    assert h.settling_count == 1
+    maintain._print_index_health(h)
+    out = capsys.readouterr().out
+    assert "0/0 indexed  [OK]" in out
+    assert "Settling   : 1 fresh file(s)" in out
 
 
 def test_cmd_repair_dry_run_when_clean(curios_data_env, capsys):

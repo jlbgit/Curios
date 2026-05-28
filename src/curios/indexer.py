@@ -665,7 +665,8 @@ def drain_pending_queue() -> list[Path]:
         processing.unlink(missing_ok=True)
     except OSError:
         return []
-    return [Path(line) for line in lines if line.strip() and Path(line).is_file()]
+    valid_paths = [Path(line) for line in lines if line.strip() and Path(line).is_file()]
+    return valid_paths
 
 
 def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:

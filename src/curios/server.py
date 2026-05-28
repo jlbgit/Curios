@@ -29,6 +29,7 @@ from curios.config import (
     CHROMADB_PATH,
     COLLECTION_NAME,
     DECISION_BOOST,
+    DISCOVERY_INDEX_GRACE_S,
     FIELD_QUERY_TEMPLATES,
     HYBRID_SEARCH_ENABLED,
     MAX_CHUNKS_PER_CONV,
@@ -51,7 +52,6 @@ from curios.config import (
     SEARCH_FETCH_MIN,
     SEARCH_MAX_TEXT,
     SEARCH_OVERFETCH_FACTOR,
-    DISCOVERY_INTERVAL_S,
     get_compiled_topic_patterns,
     get_embedding_function,
     get_topic_keywords,
@@ -82,7 +82,6 @@ def _wrap(body: str) -> str:
 
 _client_instance: chromadb.PersistentClient | None = None
 _bm25_bootstrapped = False
-_last_discovery: float = 0.0
 _health_checked = False
 
 _HNSW_PROBE_TIMEOUT_S = 30
@@ -332,51 +331,60 @@ def _ensure_bm25(coll) -> None:
 def _catch_up_index() -> None:
     """Index transcripts missed by the session hook, then drain the queue.
 
-    Two phases:
-    1. Full discovery (every DISCOVERY_INTERVAL_S): scans all transcript
-       dirs for files not in sentinels.
-    2. Queue drain + stale check (every call): processes paths queued by
-       the session hook and detects mtime-changed files. This is cheap.
+    Phases:
+    1. Full discovery: scans transcript dirs for files not in sentinels.
+    2. Queue drain + stale check: processes paths queued by the session hook
+       and detects mtime-changed files.
 
     All ChromaDB writes happen in-process (the MCP server), avoiding the
     cross-process HNSW contention that corrupted the DB before.
     """
-    global _last_discovery
     try:
         from curios.config import SCHEMA_VERSION
-        from curios.indexer import discover_transcripts, drain_pending_queue, run_index
+        from curios.indexer import (
+            discover_transcripts,
+            drain_pending_queue,
+            run_index,
+        )
 
-        unindexed: list[Path] = []
-        seen: set[str] = set()
-
-        def _enqueue(p: Path) -> None:
-            try:
-                ap = str(p.resolve())
-                mtime = int(p.stat().st_mtime)
-            except OSError:
-                return
-            if ap in seen:
-                return
-            seen.add(ap)
-            if not sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
-                unindexed.append(p)
-
-        now = time.time()
-        if now - _last_discovery >= DISCOVERY_INTERVAL_S:
-            for p in discover_transcripts():
-                _enqueue(p)
-            _last_discovery = now
-
-        for qp in drain_pending_queue():
-            _enqueue(qp)
-
-        for sp in sentinels.find_stale(SCHEMA_VERSION):
-            _enqueue(Path(sp))
-
-        if not unindexed:
-            return
-        log.info("catch-up: %d transcript(s) to index", len(unindexed))
         with index_lock():
+            unindexed: list[Path] = []
+            seen: set[str] = set()
+            now = int(time.time())
+
+            def _enqueue(p: Path, *, source: str) -> None:
+                try:
+                    ap = str(p.resolve())
+                    mtime = int(p.stat().st_mtime)
+                except OSError:
+                    return
+                if ap in seen:
+                    return
+                if (
+                    source == "discovery"
+                    and DISCOVERY_INDEX_GRACE_S > 0
+                    and now - mtime < DISCOVERY_INDEX_GRACE_S
+                ):
+                    return
+                seen.add(ap)
+                if not sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+                    unindexed.append(p)
+
+            discovered_paths = discover_transcripts()
+            for p in discovered_paths:
+                _enqueue(p, source="discovery")
+
+            queue_paths = drain_pending_queue()
+            for qp in queue_paths:
+                _enqueue(qp, source="queue")
+
+            stale_paths = sentinels.find_stale(SCHEMA_VERSION)
+            for sp in stale_paths:
+                _enqueue(Path(sp), source="stale")
+
+            if not unindexed:
+                return
+            log.info("catch-up: %d transcript(s) to index", len(unindexed))
             files_done, chunks = run_index(
                 unindexed, force=True, dry_run=False, client=_get_client()
             )

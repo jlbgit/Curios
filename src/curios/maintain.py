@@ -26,6 +26,7 @@ from curios.config import (
     CLI_MAX_LIST_ITEMS,
     CLI_RULER_WIDTH,
     COLLECTION_NAME,
+    DISCOVERY_INDEX_GRACE_S,
     INDEX_LOG_PATH,
     LAST_INDEXED_PATH,
     SCHEMA_STATE_PATH,
@@ -38,7 +39,12 @@ from curios.config import (
     import_slug_for_project,
     transcript_relative_path,
 )
-from curios.indexer import PENDING_QUEUE_PATH, discover_transcripts, index_lock, run_index
+from curios.indexer import (
+    PENDING_QUEUE_PATH,
+    discover_transcripts,
+    index_lock,
+    run_index,
+)
 
 _W = CLI_RULER_WIDTH
 _MAX_LIST = CLI_MAX_LIST_ITEMS
@@ -413,6 +419,7 @@ class IndexHealth:
     last_chunks_written: int = 0
     total_transcripts: int = 0
     unindexed_count: int = 0
+    settling_count: int = 0
     pending_queue_count: int = 0
     recent_errors: list[str] = field(default_factory=list)
 
@@ -430,10 +437,18 @@ def _collect_index_health() -> IndexHealth:
 
     all_paths = discover_transcripts()
     h.total_transcripts = len(all_paths)
-    h.unindexed_count = sum(
-        1 for p in all_paths
-        if not sentinels.is_indexed(str(p.resolve()), SCHEMA_VERSION)
-    )
+    now = int(time.time())
+    for p in all_paths:
+        if sentinels.is_indexed(str(p.resolve()), SCHEMA_VERSION):
+            continue
+        try:
+            age_s = now - int(p.stat().st_mtime)
+        except OSError:
+            continue
+        if DISCOVERY_INDEX_GRACE_S > 0 and age_s < DISCOVERY_INDEX_GRACE_S:
+            h.settling_count += 1
+        else:
+            h.unindexed_count += 1
 
     if PENDING_QUEUE_PATH.is_file():
         try:
@@ -463,12 +478,15 @@ def _print_index_health(h: IndexHealth, verbose: bool = False) -> None:
     else:
         print("  Last run   : never recorded")
 
-    indexed = h.total_transcripts - h.unindexed_count
+    indexed_total = h.total_transcripts - h.settling_count
+    indexed = indexed_total - h.unindexed_count
     status = "OK" if h.unindexed_count == 0 else f"{h.unindexed_count} UNINDEXED"
-    print(f"  Transcripts: {indexed}/{h.total_transcripts} indexed  [{status}]")
+    print(f"  Transcripts: {indexed}/{indexed_total} indexed  [{status}]")
 
     if h.pending_queue_count:
         print(f"  Queue      : {h.pending_queue_count} file(s) pending")
+    if h.settling_count:
+        print(f"  Settling   : {h.settling_count} fresh file(s) awaiting hook/grace")
 
     if h.recent_errors:
         print(f"  Errors     : {len(h.recent_errors)} recent issue(s) in index.log")
@@ -676,6 +694,13 @@ _SEARCH_SNIPPET_MIN = 48
 _SEARCH_SNIPPET_MAX = 12_000
 
 
+def _catch_up_before_read(_command: str) -> None:
+    """Best-effort catch-up so read commands see recently closed sessions."""
+    from curios.server import _catch_up_index
+
+    _catch_up_index()
+
+
 def cmd_search(
     query: str,
     project: str | None,
@@ -683,6 +708,7 @@ def cmd_search(
     snippet_chars: int = _SEARCH_SNIPPET_DEFAULT,
     since_hours: int | None = None,
 ) -> int:
+    _catch_up_before_read("search")
     snip = max(_SEARCH_SNIPPET_MIN, min(int(snippet_chars), _SEARCH_SNIPPET_MAX))
     resolved = sentinels.resolve_project(project) if project else None
     since_ts = int(time.time()) - since_hours * 3600 if since_hours is not None else None
@@ -729,6 +755,7 @@ def cmd_search(
 
 
 def cmd_status() -> int:
+    _catch_up_before_read("status")
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1
@@ -761,6 +788,7 @@ def cmd_status() -> int:
 
 
 def cmd_report() -> int:
+    _catch_up_before_read("report")
     if not CHROMADB_PATH.is_dir():
         print("chromadb directory missing", file=sys.stderr)
         return 1

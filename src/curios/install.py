@@ -842,6 +842,9 @@ def _run_index_command(args: argparse.Namespace) -> int:
 
 
 def cmd_recent(hours: int, project: str | None, n_results: int) -> int:
+    from curios.maintain import _catch_up_before_read
+
+    _catch_up_before_read("recent")
     since_ts = int(time.time()) - hours * 3600
     resolved = sentinels.resolve_project(project) if project else None
     rows = sentinels.get_recent_conversations(

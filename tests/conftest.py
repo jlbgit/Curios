@@ -28,7 +28,6 @@ def reset_server_globals() -> None:
 
     srv._client_instance = None
     srv._bm25_bootstrapped = False
-    srv._last_discovery = 0.0
 
 
 def patch_curios_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:

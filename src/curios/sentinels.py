@@ -12,6 +12,7 @@ from curios.config import (
     RECAP_PREVIEW_MAX,
     SENTINELS_DB_PATH,
     STALE_MAX_AGE_S,
+    STALE_REINDEX_GRACE_S,
     ensure_data_dir,
     set_owner_only_permissions,
 )
@@ -132,9 +133,15 @@ def wipe() -> None:
         conn.commit()
 
 
-def find_stale(schema_version: int, max_age_s: int = STALE_MAX_AGE_S) -> list[str]:
+def find_stale(
+    schema_version: int,
+    max_age_s: int = STALE_MAX_AGE_S,
+    min_index_age_s: int = STALE_REINDEX_GRACE_S,
+) -> list[str]:
     """Return abs_paths of files indexed recently whose mtime has since changed."""
-    cutoff = int(time.time()) - max_age_s
+    now = int(time.time())
+    cutoff = now - max_age_s
+    newest_allowed_index = now - min_index_age_s
     with _lock:
         conn = _get_conn()
         rows = conn.execute(
@@ -144,6 +151,8 @@ def find_stale(schema_version: int, max_age_s: int = STALE_MAX_AGE_S) -> list[st
         ).fetchall()
     stale: list[str] = []
     for abs_path, stored_mtime, indexed_at in rows:
+        if min_index_age_s > 0 and int(indexed_at) > newest_allowed_index:
+            continue
         try:
             current_mtime = int(os.path.getmtime(abs_path))
         except OSError:
