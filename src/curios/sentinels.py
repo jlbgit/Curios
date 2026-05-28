@@ -165,6 +165,19 @@ def find_stale(
     return stale
 
 
+def get_sentinel(abs_path: str) -> dict[str, int] | None:
+    """Return sentinel details or None if not found."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT file_mtime, indexed_at FROM sentinels WHERE abs_path = ?",
+            (abs_path,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"file_mtime": int(row[0] or 0), "indexed_at": int(row[1] or 0)}
+
+
 def delete_sentinel(abs_path: str) -> None:
     """Remove per-file sentinel row (e.g. transcript deleted from disk)."""
     with _lock:

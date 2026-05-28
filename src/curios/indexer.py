@@ -651,22 +651,36 @@ def drain_pending_queue() -> list[Path]:
     """Read and clear the pending queue, returning valid file paths.
 
     Uses atomic rename so a concurrent hook append can't be lost between
-    read and delete.
+    read and delete. Recovers an orphaned ``.processing`` file left by a
+    crash between rename and unlink.
     """
     processing = PENDING_QUEUE_PATH.with_suffix(".processing")
+    orphan_lines: list[str] = []
+    if processing.is_file():
+        try:
+            orphan_lines = processing.read_text(encoding="utf-8").splitlines()
+            processing.unlink(missing_ok=True)
+        except OSError:
+            orphan_lines = []
+
     try:
         os.rename(PENDING_QUEUE_PATH, processing)
     except FileNotFoundError:
-        return []
+        lines = orphan_lines
     except OSError:
-        return []
-    try:
-        lines = processing.read_text(encoding="utf-8").splitlines()
-        processing.unlink(missing_ok=True)
-    except OSError:
-        return []
-    valid_paths = [Path(line) for line in lines if line.strip() and Path(line).is_file()]
-    return valid_paths
+        return [
+            Path(line)
+            for line in orphan_lines
+            if line.strip() and Path(line).is_file()
+        ]
+    else:
+        try:
+            lines = orphan_lines + processing.read_text(encoding="utf-8").splitlines()
+            processing.unlink(missing_ok=True)
+        except OSError:
+            lines = orphan_lines
+
+    return [Path(line) for line in lines if line.strip() and Path(line).is_file()]
 
 
 def _locate_transcript_fallback(payload: dict[str, Any]) -> str | None:

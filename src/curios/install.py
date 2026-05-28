@@ -58,6 +58,9 @@ examples (commands above follow the same order: setup → index → inspect → 
   curios search "concurrency locking"
   curios search RAG improvements --project Curios --n 10
   curios search Neo4j driver --chars 800
+  # Detailed diagnostic of unindexed / stale / queued / settling conversations.
+  curios pending
+  curios pending --project Curios --verbose
   # Read-only audit (Chroma, BM25 parity, recap/sentinel drift, permissions, schema file on disk).
   curios verify
   # Run verify logic, then apply safe auto-fixes (BM25 drift, orphan rows, missing schema file).
@@ -948,7 +951,15 @@ def _cli() -> int:
         help=argparse.SUPPRESS,
     )
 
-    sub.add_parser("status", help="Quick summary: chunk counts, depth, novelty, indexing health")
+    status_p = sub.add_parser(
+        "status",
+        help="Quick summary: chunk counts, depth, novelty, indexing health",
+    )
+    status_p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show catch-up indexing progress and detailed settling/stale health lines",
+    )
     sub.add_parser("report", help="Detailed report: per-project stats, shallow and incremental lists")
 
     rec_p = sub.add_parser(
@@ -991,6 +1002,21 @@ def _cli() -> int:
         metavar="HOURS",
         dest="since_hours",
         help="Limit to conversations active in the last N hours",
+    )
+
+    pend_p = sub.add_parser(
+        "pending",
+        help="Detailed diagnostic of every conversation not cleanly indexed",
+        description=(
+            "Shows unindexed, stale, settling, queued, and orphaned conversations "
+            "with file-level detail and pipeline status."
+        ),
+    )
+    pend_p.add_argument("--project", type=str, default=None, metavar="NAME")
+    pend_p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show full file paths and additional config details",
     )
 
     sub.add_parser(
@@ -1119,9 +1145,11 @@ def _cli() -> int:
         )
 
     if args.cmd == "status":
-        return maintain.cmd_status()
+        return maintain.cmd_status(verbose=args.verbose)
     if args.cmd == "report":
         return maintain.cmd_report()
+    if args.cmd == "pending":
+        return maintain.cmd_pending(project=args.project, verbose=args.verbose)
     if args.cmd == "verify":
         return maintain.cmd_verify()
     if args.cmd == "repair":

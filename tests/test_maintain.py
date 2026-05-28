@@ -266,6 +266,29 @@ def test_cmd_status_report_verify_smoke(curios_data_env, capsys):
     assert "total_issues" in out3
 
 
+def test_catch_up_before_read_quiet_suppresses_info_logs(
+    curios_data_env, monkeypatch, caplog
+):
+    import logging
+    from curios import maintain
+
+    caplog.set_level(logging.INFO, logger="curios.server")
+
+    def fake_catch_up() -> None:
+        logging.getLogger("curios.server").info("catch-up: discovered=1")
+
+    monkeypatch.setattr(
+        "curios.server._catch_up_index",
+        fake_catch_up,
+    )
+    maintain._catch_up_before_read("status", quiet=True)
+    assert not any("catch-up: discovered" in r.message for r in caplog.records)
+
+    caplog.clear()
+    maintain._catch_up_before_read("status", quiet=False)
+    assert any("catch-up: discovered" in r.message for r in caplog.records)
+
+
 def test_cmd_status_runs_catchup_before_reading_index(
     curios_data_env, monkeypatch, capsys
 ):
@@ -277,7 +300,7 @@ def test_cmd_status_runs_catchup_before_reading_index(
 
     events: list[str] = []
 
-    def fake_catch_up(command: str) -> None:
+    def fake_catch_up(command: str, *, quiet: bool = True) -> None:
         events.append(f"catch-up:{command}")
 
     def fake_collect_stats():
@@ -319,10 +342,36 @@ def test_index_health_reports_fresh_unindexed_as_settling(
 
     assert h.unindexed_count == 0
     assert h.settling_count == 1
+    assert len(h.settling_files) == 1
+    assert h.settling_files[0][0] == "fresh.jsonl"
+    assert h.settling_files[0][1] >= 0
     maintain._print_index_health(h)
     out = capsys.readouterr().out
     assert "0/0 indexed  [OK]" in out
     assert "Settling   : 1 fresh file(s)" in out
+
+
+def test_index_health_reports_stale_file(curios_data_env):
+    from curios import maintain
+    import os
+    import time
+
+    proj_base = curios_data_env / "projects"
+    transcript = proj_base / "slug" / "agent-transcripts" / "stale.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"role":"user","message":{"content":"old"}}\n', encoding="utf-8")
+    ap = str(transcript.resolve())
+    stored_mtime = int(time.time()) - 3600
+    os.utime(transcript, (stored_mtime, stored_mtime))
+    sentinels.mark_indexed(ap, SCHEMA_VERSION, file_mtime=stored_mtime)
+
+    new_mtime = stored_mtime + 100
+    os.utime(transcript, (new_mtime, new_mtime))
+
+    h = maintain._collect_index_health()
+    assert h.stale_count == 1
+    assert h.unindexed_count == 0
+    assert h.settling_count == 0
 
 
 def test_cmd_repair_dry_run_when_clean(curios_data_env, capsys):

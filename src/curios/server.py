@@ -3,10 +3,12 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Annotated, Any, Iterator
@@ -351,8 +353,13 @@ def _catch_up_index() -> None:
             unindexed: list[Path] = []
             seen: set[str] = set()
             now = int(time.time())
+            from_queue = 0
+            from_stale = 0
+            skipped_grace = 0
+            skipped_indexed = 0
 
             def _enqueue(p: Path, *, source: str) -> None:
+                nonlocal from_queue, from_stale, skipped_grace, skipped_indexed
                 try:
                     ap = str(p.resolve())
                     mtime = int(p.stat().st_mtime)
@@ -363,14 +370,22 @@ def _catch_up_index() -> None:
                 if (
                     source == "discovery"
                     and DISCOVERY_INDEX_GRACE_S > 0
-                    and now - mtime < DISCOVERY_INDEX_GRACE_S
+                    and max(0, now - mtime) < DISCOVERY_INDEX_GRACE_S
                 ):
+                    skipped_grace += 1
                     return
                 seen.add(ap)
-                if not sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
-                    unindexed.append(p)
+                if sentinels.is_indexed(ap, SCHEMA_VERSION, file_mtime=mtime):
+                    skipped_indexed += 1
+                    return
+                unindexed.append(p)
+                if source == "queue":
+                    from_queue += 1
+                elif source == "stale":
+                    from_stale += 1
 
             discovered_paths = discover_transcripts()
+            discovered_n = len(discovered_paths)
             for p in discovered_paths:
                 _enqueue(p, source="discovery")
 
@@ -382,9 +397,19 @@ def _catch_up_index() -> None:
             for sp in stale_paths:
                 _enqueue(Path(sp), source="stale")
 
+            to_index = len(unindexed)
+            log.info(
+                "catch-up: discovered=%d queued=%d stale=%d | "
+                "skipped: indexed=%d grace=%d | to_index=%d",
+                discovered_n,
+                from_queue,
+                from_stale,
+                skipped_indexed,
+                skipped_grace,
+                to_index,
+            )
             if not unindexed:
                 return
-            log.info("catch-up: %d transcript(s) to index", len(unindexed))
             files_done, chunks = run_index(
                 unindexed, force=True, dry_run=False, client=_get_client()
             )
@@ -392,13 +417,34 @@ def _catch_up_index() -> None:
             log.info("catch-up: indexed %d files (%d chunks)", files_done, chunks)
             _reset_client()
             from curios.config import LAST_INDEXED_PATH
+
             LAST_INDEXED_PATH.parent.mkdir(parents=True, exist_ok=True)
-            LAST_INDEXED_PATH.write_text(
-                json.dumps({"indexed_at": int(time.time()), "files_done": files_done, "chunks_written": chunks}, indent=2),
-                encoding="utf-8",
+            payload = json.dumps(
+                {
+                    "indexed_at": int(time.time()),
+                    "files_done": files_done,
+                    "chunks_written": chunks,
+                },
+                indent=2,
             )
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                dir=str(LAST_INDEXED_PATH.parent),
+                prefix=f".{LAST_INDEXED_PATH.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tf:
+                tmp_name = tf.name
+                tf.write(payload)
+            try:
+                os.replace(tmp_name, LAST_INDEXED_PATH)
+            except BaseException:
+                Path(tmp_name).unlink(missing_ok=True)
+                raise
     except Exception as e:
-        log.warning("catch-up index failed: %s", e)
+        log.warning("catch-up index failed: %s", e, exc_info=True)
 
 
 def _resolve_project(project: str | None) -> list[str] | None:

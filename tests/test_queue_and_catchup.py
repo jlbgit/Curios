@@ -123,6 +123,24 @@ def test_drain_pending_queue_ignores_blank_lines(monkeypatch, tmp_path):
     assert len(result) == 1
 
 
+def test_drain_pending_queue_recovers_orphaned_processing(monkeypatch, tmp_path):
+    data = tmp_path / "curios_data"
+    data.mkdir()
+    queue_path = data / "pending_index.txt"
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+
+    orphan_file = tmp_path / "orphan.jsonl"
+    orphan_file.touch()
+    processing = queue_path.with_suffix(".processing")
+    processing.write_text(str(orphan_file.resolve()) + "\n", encoding="utf-8")
+
+    from curios.indexer import drain_pending_queue
+
+    result = drain_pending_queue()
+    assert len(result) == 1
+    assert result[0] == orphan_file
+
+
 # ── _session_hook ────────────────────────────────────────────
 
 
@@ -464,6 +482,40 @@ def test_catch_up_no_crash_on_exception(monkeypatch, tmp_path, caplog):
     server._catch_up_index()
 
     assert any("catch-up index failed" in r.message for r in caplog.records)
+
+
+def test_catch_up_recovers_after_prior_failure(monkeypatch, tmp_path):
+    """After catch-up fails, the next call can still index queued work."""
+    patch_curios_roots(monkeypatch, tmp_path)
+    from curios.config import SCHEMA_VERSION
+    import curios.server as server
+
+    transcript = tmp_path / "projects" / "s" / "agent-transcripts" / "recover.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"role":"user","message":{"content":"x"}}\n', encoding="utf-8")
+    ap = str(transcript.resolve())
+
+    queue_path = tmp_path / "curios_data" / "pending_index.txt"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(ap + "\n", encoding="utf-8")
+    monkeypatch.setattr("curios.indexer.PENDING_QUEUE_PATH", queue_path)
+
+    def exploding_run_index(*a, **kw):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr("curios.indexer.run_index", exploding_run_index)
+    server._catch_up_index()
+    assert not sentinels.is_indexed(ap, SCHEMA_VERSION)
+
+    def working_run_index(paths, force, dry_run, project_override=None, **kwargs):
+        for p in paths:
+            sentinels.mark_indexed(str(p.resolve()), SCHEMA_VERSION)
+        return (len(paths), 1)
+
+    monkeypatch.setattr("curios.indexer.run_index", working_run_index)
+    queue_path.write_text(ap + "\n", encoding="utf-8")
+    server._catch_up_index()
+    assert sentinels.is_indexed(ap, SCHEMA_VERSION)
 
 
 def test_catch_up_deduplicates_discovery_and_queue(monkeypatch, tmp_path):
